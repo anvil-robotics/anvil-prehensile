@@ -1,0 +1,36 @@
+[project]
+name = "prehensile"
+version = "1.1.0"
+description = "Glove -> REALHAND L6 teleoperation: UDCap/Wuji gloves, retarget + curl mapping, MuJoCo preview, SocketCAN command path"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "pyyaml",
+    "protobuf>=5",
+    "realhand @ git+https://github.com/RealHand-Robotics/realbot-python-sdk.git@83cc6ef0c1fcf4e1a433c405a231e69e2e714c9d",
+    "dex-retargeting>=0.5.0",
+    "mujoco>=3.10.0",
+    "torch>=2.12.1",
+    "wuji-sdk>=2026.7.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-p no:launch_testing -p no:launch_ros"
+
+# Flat layout with several top-level dirs (assets/, configs/, tools/, scripts/):
+# tell setuptools to package ONLY the `prehensile` importable package. assets and
+# configs are reached by file path at runtime, not as package data.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["prehensile*"]

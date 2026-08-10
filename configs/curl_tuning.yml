@@ -1,0 +1,62 @@
+# Curl-map response tuning -- the single source of truth for `--map curl`
+# (`prehensile.teleop` / `prehensile.viz`). Edit and re-run; there are no tuning
+# CLI flags.
+#
+# Convention: 100 = open, 0 = closed. Channels: thumb_flex, thumb_abd, index,
+# middle, ring, pinky. (thumb_abd's per-glove invert sense lives in profiles.py;
+# `flip` below is per-side and applies to both gloves.)
+#
+# Keys, all optional except thumb_flex's couple_low:
+#   gain   swing multiplier around `pivot`. >1 amplifies, <1 softens, 1.0 = off.
+#   pivot  the 0-100 value `gain` leaves unchanged; only matters when gain != 1.
+#          Raise it (e.g. 70) to push curled/low values lower for a given gain.
+#   alpha  per-channel EMA smoothing, default 0.4. Lower = smoother, laggier.
+#   flip   complement the output (100 - x), applied LAST. The knob for a thumb
+#          mounted backwards on one hand -- no code change needed.
+#   park   literal 0-100 the channel is held at while the glove's bButton lock is
+#          engaged. Applied AFTER flip and bypassing gain/pivot, so BOTH hands are
+#          commanded this exact value. Only parked channels feel the lock.
+#   couple_low  valid on thumb_flex and index ONLY -- anywhere else, loading fails.
+#
+# Order per frame: gain/pivot -> flip -> park (while locked). While locked, the
+# thumb<-index coupling (always on) then overrides thumb_flex: it follows the
+# index, rescaled onto [thumb_flex.couple_low, 100], giving a proportional pinch.
+# couple_low values are TRACKED quantities, so unlike `park` they DO pass through
+# the channel's flip.
+#   thumb_flex.couple_low  the thumb's output floor -- how far it may close.
+#                          REQUIRED: loading fails without it, because a missing
+#                          value would mean 0, closing the thumb's full travel
+#                          into a thumb_abd parked across the palm -- into the
+#                          operator's closing fingers.
+#   index.couple_low       a floor on the index's OWN command, so the driving
+#                          finger stops short of closed; the index then normalizes
+#                          within [floor, 100], so both channels reach their floor
+#                          together. Unset/0 = no clamp. 100 is degenerate and
+#                          pins both fully open -- watch for a 100-for-10 typo.
+# While coupled, thumb_flex's own gain/pivot no longer affect the commanded thumb
+# (its metric is bypassed); they still shape what the console shows and what
+# unlocking resumes from. Tune the pinch with the two couple_lows and index's gain.
+#
+# Optional `left:` / `right:` sections take the same {channel: params} shape and
+# merge ON TOP of the shared channels below, per key, for that side only.
+
+thumb_flex: {gain: 2.5, pivot: 80, couple_low: 30}
+thumb_abd:  {gain: 1.5, pivot: 40, park: 5}
+index:      {gain: 1.2, pivot: 75, couple_low: 50}
+middle:     {gain: 1.2, pivot: 75}
+ring:       {gain: 1.2, pivot: 75}
+pinky:      {gain: 1.2, pivot: 75}
+
+# The right thumb is mounted mirrored relative to the left, so its tracked metric
+# reads backwards: thumb_abd flips, thumb_flex does not. Both are stated
+# explicitly -- this used to be hardcoded in curlmap.py.
+right:
+  thumb_flex: {flip: false}
+  thumb_abd:  {flip: true}
+
+# *** KNOWN ISSUE (right hand): `park` bypasses the flip, so the shared thumb_abd
+# park above lands on OPPOSITE PHYSICAL ENDS on the two hands -- SDK 5 is ~tucked
+# on the left but ~spread on the right. The right thumb therefore parks AWAY from
+# its fingers and the right-hand pinch is geometrically wrong. Fix via
+# `right: thumb_abd: {park: N}` with N confirmed on hardware; the value was only
+# ever dialed in for the LEFT hand, so the right N is still unknown. ***

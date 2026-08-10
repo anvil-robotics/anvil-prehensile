@@ -1,0 +1,13 @@
+retargeting:
+  type: vector
+  urdf_path: l6/right/realhand_l6_right.urdf
+
+  target_joint_names: [ 'pinky_mcp_pitch', 'ring_mcp_pitch', 'middle_mcp_pitch', 'index_mcp_pitch',
+    'thumb_cmc_pitch', 'thunb_cmc_roll'  ]
+  target_origin_link_names: [ 'hand_base_link', 'hand_base_link', 'hand_base_link',
+                            'hand_base_link', 'hand_base_link' ]
+  target_task_link_names: [ 'thumb_distal', 'index_distal', 'middle_distal', 'ring_distal', 'pinky_distal' ]
+  scaling_factor: 1.15
+
+  target_link_human_indices: [ [ 0, 0, 0, 0, 0 ], [ 4, 8, 12, 16, 20 ] ]
+  low_pass_alpha: 0.2
