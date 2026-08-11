@@ -17,7 +17,7 @@ They diverge only at the front of the pipeline: how you connect, and which
 | | UDCap | Wuji |
 | --- | --- | --- |
 | link | HandDriver → UDP `127.0.0.1:5555` | USB + `wuji_sdk` |
-| before you start | Data Transmission ON, Format **Quater**, FPS 120 | close Wuji Studio (only one session may talk to the glove) |
+| before you start | Data Transmission ON, Format **Quater**, FPS 120 | calibrate in Wuji Studio, then close it (only one session may talk to the glove) |
 | verify the wire | `uv run python tools/probe_udp.py --seconds 2` | not applicable — the SDK scan in `--glove wuji` is the check |
 | `--map` | **`curl`** — `retarget` is degenerate for UDCap | **the default `retarget`** — validated for Wuji |
 | `--port` | applies | ignored |
@@ -40,11 +40,14 @@ pkts/s and a `verdict:` naming `TeleopDataQuat` or `JSON`; either is fine. It
 holds port 5555, so stop it before teleop. Use `--map curl`: `--map retarget` is
 degenerate for this glove.
 
-**Wuji** — close Wuji Studio first: only one session may talk to the glove, and a
-stale one blocks reconnects until its heartbeat times out. If it's still not
-closed, `connect_glove` retries for you — up to 12 attempts, 4 s apart (~48 s
-total), printing progress each time. Let it run rather than Ctrl-C early. Use
-the default `--map retarget`, which is validated for this glove.
+**Wuji** — calibrate the glove first in **Wuji Studio**
+([calibration guide](https://docs.wuji.tech/docs/en/wuji-studio/latest/calibration/),
+[install](https://docs.wuji.tech/docs/en/wuji-studio/latest/installation/)).
+Create a **named profile** before you calibrate — the built-in `Default` profile
+does not persist results, so calibrating under it silently changes nothing and
+the SDK keeps falling back to a generic hand URDF. Studio then walks you through
+six guided poses; results land in `~/.wuji/sdk/users/<profile-id>/models/` and
+the SDK reads the same directory. After all above, close Wuji Studio since only one session may talk to the glove.
 
 **The hand**, before any `--live` run:
 
