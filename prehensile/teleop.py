@@ -8,12 +8,12 @@ the L6 and send commands (fingers move). Retargeting is wrist-relative, so it
 is immune to the glove's IMU yaw drift.
 
 udcap needs HandDriver streaming the Quater content to 127.0.0.1:<port> (see
-RUNBOOK.md). wuji needs the Wuji glove connected and wuji_sdk installed.
+README.md). wuji needs the Wuji glove connected and wuji_sdk installed.
 
     uv run python -m prehensile.teleop                     # dry-run, UDCap glove, left hand
     uv run python -m prehensile.teleop --glove wuji         # dry-run, Wuji glove
     uv run python -m prehensile.teleop --hand right --live  # drive the L6 (clear the area first!)
-    uv run python -m prehensile.teleop --map curl           # direct per-finger curl map (see curlmap.py)
+    uv run python -m prehensile.teleop --map retarget       # the optimizer instead (see retarget.py)
 
 Dry-run needs only the glove source. --live also needs the L6 powered on the
 hand's CAN interface. Ctrl-C stops; in --live the hand holds its last
@@ -183,8 +183,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--port", type=int, default=5555, help="UDP port HandDriver streams to (udcap only)")
     ap.add_argument("--map", choices=["retarget", "curl"], default="curl",
-                    help="angle-mapping strategy: the dex_retargeting vector optimizer "
-                         " or a direct per-finger curl map (see curlmap.py)")
+                    help="angle-mapping strategy: the direct per-finger curl map "
+                         "(default, see curlmap.py) or the dex_retargeting vector optimizer")
     return ap
 
 

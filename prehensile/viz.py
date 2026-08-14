@@ -12,20 +12,22 @@ pass --no-keypoints to hide them).
     uv run python -m prehensile.viz --glove wuji        # Wuji glove instead
     uv run python -m prehensile.viz --hand right        # right hand/URDF
     uv run python -m prehensile.viz --no-keypoints      # sim hand only
-    uv run python -m prehensile.viz --map curl          # preview the direct per-finger curl map
+    uv run python -m prehensile.viz --map retarget      # preview the optimizer instead
 
 udcap needs HandDriver streaming the Quater content to 127.0.0.1:<port>. wuji
 needs the Wuji glove connected and wuji_sdk installed. Opens a MuJoCo window
-(needs a display). Close the window or Ctrl-C to stop. The sim is driven by the
-raw retargeted qpos (radians) -- the most faithful view of what retargeting
-produces, before the 0-100 quantization the real hand receives.
+(needs a display). Close the window or Ctrl-C to stop.
 
-With ``--map curl`` the sim instead previews the direct per-finger curl map
-(``prehensile.curlmap``, the same path ``teleop.py --map curl`` drives): each L6
-angle (0-100) is mapped back across its driver joint's URDF limit range and the
-mimic (*_dip) joints are propagated, so you see exactly what the curl command
-does to the hand. Tuning is always read from configs/curl_tuning.yml (see
+By default (``--map curl``) the sim previews the direct per-finger curl map
+(``prehensile.curlmap``, the same path ``teleop.py`` drives): each L6 angle
+(0-100) is mapped back across its driver joint's URDF limit range and the mimic
+(*_dip) joints are propagated, so you see exactly what the curl command does to
+the hand. Tuning is always read from configs/curl_tuning.yml (see
 ``prehensile.tuning``); there are no CLI tuning flags.
+
+With ``--map retarget`` the sim is instead driven by the raw retargeted qpos
+(radians) -- the most faithful view of what retargeting produces, before the
+0-100 quantization the real hand receives.
 """
 
 import argparse
@@ -188,9 +190,9 @@ def main():
     ap.add_argument("--port", type=int, default=5555, help="UDP port HandDriver streams to (udcap only)")
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--no-keypoints", action="store_true", help="hide the human keypoint overlay")
-    ap.add_argument("--map", choices=["retarget", "curl"], default="retarget",
-                    help="angle-mapping strategy to preview: the dex_retargeting vector "
-                         "optimizer (default) or the direct per-finger curl map (see curlmap.py)")
+    ap.add_argument("--map", choices=["retarget", "curl"], default="curl",
+                    help="angle-mapping strategy to preview: the direct per-finger curl map "
+                         "(default, see curlmap.py) or the dex_retargeting vector optimizer")
     args = ap.parse_args()
 
     glove = GLOVES[args.glove]
