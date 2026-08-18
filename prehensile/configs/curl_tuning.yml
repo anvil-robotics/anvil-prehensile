@@ -11,19 +11,64 @@
 #   flip   complement the output (100 - x), for a thumb mounted mirrored.
 #   park   literal value the channel holds while the bButton lock is engaged.
 #   couple_low  thumb_flex and index ONLY -- anywhere else, loading fails.
+#     NOTE the same bButton lock also groups middle/ring/pinky: while locked, all
+#     three are commanded the MEDIAN of the three fingers' tracked openness. That
+#     is unconditional and has NO tuning key here at all -- no couple_low-style
+#     opt-in/out, no per-channel switch; `locked` alone drives it, same as the
+#     thumb pinch. middle/ring/pinky's own gain/pivot are still live while
+#     locked: they shape the tracked values that feed the median, so those knobs
+#     are NOT dead just because the lock is engaged.
+#   home_gesture  physical-openness value (0-100, so 100 = open on EITHER hand)
+#     this channel takes in the static thumbs-up `CurlMapper.home_gesture()`
+#     returns for the ROS node to command while the arms are still homing. Valid
+#     on all six channels (unlike couple_low). Unlike `park` it DOES pass through
+#     the channel's `flip` -- it is a physical pose, not a literal SDK target, so
+#     both hands must land on the SAME PHYSICAL gesture even where a mirrored
+#     channel is flipped between them. Defaults to HOME_GESTURE_OPENNESS in
+#     curlmap.py; the explicit values below just make the shipped pose visible
+#     and tunable here. It is a separate static pose, NOT part of the per-frame
+#     formula below, and ignores gain/pivot/park/couple_low.
+#
+# Formula per frame -- this IS the whole pipeline, in order:
+#   out        = clip(pivot + (raw - pivot) * gain, 0, 100)
+#   out        = flip ? 100 - out : out
+#   out        = (locked and park set) ? park : out    # flip does NOT apply
+#   # the rest are final and flip DOES apply (they are tracked values, not targets):
+#   idx        = max(index.couple_low, index_preflip)  # when locked and coupled
+#   index      = coupled & floored ? flip(idx) : index
+#   u          = (idx - index.couple_low) / (100 - index.couple_low)
+#   thumb_flex = (locked and coupled)
+#                  ? flip(clip(couple_low + clip(u, 0, 1) * (100 - couple_low)))
+#                  : thumb_flex
+#   group      = median(middle_preflip, ring_preflip, pinky_preflip)
+#   middle = ring = pinky = locked
+#                  ? flip(group)   # each channel's OWN flip, not one shared
+#                  : middle, ring, pinky
+# (pivot only has an effect when gain != 1.)
 
-thumb_flex: {gain: 2.5, pivot: 80, couple_low: 30}
-thumb_abd:  {gain: 1.5, pivot: 40, park: 5}
-index:      {gain: 1.2, pivot: 75, couple_low: 50}
-middle:     {gain: 1.2, pivot: 75}
-ring:       {gain: 1.2, pivot: 75}
-pinky:      {gain: 1.2, pivot: 75}
+thumb_flex: {gain: 2.5, pivot: 80, couple_low: 30, home_gesture: 100}
+thumb_abd:  {gain: 1.5, pivot: 40, park: 5, home_gesture: 100}
+index:      {gain: 1.2, pivot: 75, couple_low: 50, home_gesture: 0}
+middle:     {gain: 1.2, pivot: 75, home_gesture: 0}
+ring:       {gain: 1.2, pivot: 75, home_gesture: 0}
+pinky:      {gain: 1.2, pivot: 75, home_gesture: 0}
 
 # The right thumb is mounted mirrored, so its tracked metric reads backwards:
 # thumb_abd flips, thumb_flex does not. Both stated explicitly.
 right:
   thumb_flex: {flip: false}
-  thumb_abd:  {flip: true}
+  # home_gesture 0 (not the shared 100) is deliberate, and the two knobs on this
+  # line disagree ON PURPOSE. `flip: true` is right for the TRACKED metric -- the
+  # mirrored right thumb reads backwards during teleop -- but the homing thumbs-up
+  # came out wrong on this hand with the shared 100 (hardware, 2026-07-29): 100
+  # put through the flip lands on SDK 0, the tucked end here, so the right thumb
+  # pointed across the palm while the left pointed up. Pre-flipping to 0 makes
+  # home_gesture() emit SDK 100 on the right and reproduces the left hand's
+  # physical pose. Left is untouched and stays SDK 100. NOTE this means the right
+  # hand's home gesture is NOT the flip-mirror of the left's -- the usual "both
+  # hands, same physical pose" invariant does not hold for this one channel, and
+  # test_curlmap.py pins that asymmetry.
+  thumb_abd:  {flip: true, home_gesture: 0}
 
 # *** KNOWN ISSUE (right hand): `park` bypasses flip, so the shared thumb_abd park
 # lands on opposite physical ends per hand -- ~tucked on the left, ~spread on the

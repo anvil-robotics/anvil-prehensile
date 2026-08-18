@@ -97,6 +97,21 @@ _MID = L6_OPEN / 2.0  # pivot for the response-gain (amplify/soften around cente
 # rest of the module likewise never hardcodes a position).
 _I_THUMB_FLEX = L6_SDK_ORDER.index("thumb_flex")
 _I_INDEX = L6_SDK_ORDER.index("index")
+# Slot indices for the MRP (middle/ring/pinky) grasp group, by name -- same
+# never-hardcode-a-slot-position discipline as the pair above.
+_MRP_SLOTS = ("middle", "ring", "pinky")
+_I_MRP = tuple(L6_SDK_ORDER.index(s) for s in _MRP_SLOTS)
+
+# Default static "home gesture" (a thumbs-up): the pose CurlMapper.home_gesture()
+# emits while the arms are still homing, before glove teleop takes over. Given in
+# PHYSICAL-openness terms (100 = open, 0 = closed on either hand) -- NOT SDK
+# space -- exactly like the coupled-thumb quantity in __call__ below; overridable
+# per-channel via tuning's "home_gesture" key (see CurlMapper.__init__).
+HOME_GESTURE_OPENNESS: dict[str, float] = {
+    "thumb_flex": 100.0,   # thumb extended
+    "thumb_abd": 100.0,    # thumb spread away from the fingers
+    "index": 0.0, "middle": 0.0, "ring": 0.0, "pinky": 0.0,   # fist
+}
 
 
 def _chain_length(kp: np.ndarray, chain: tuple[int, ...]) -> float:
@@ -278,6 +293,68 @@ class CurlMapper:
       order. It is computed live from the parked-value table, so it reflects
       ``tuning``-seeded parks as well as any live ``set_park`` calls,
       including clearing a slot back out with ``set_park(slot, None)``.
+
+    MRP group (median grasp of middle/ring/pinky):
+      Unconditional while ``self.locked`` is ``True`` -- there is no separate
+      flag for it, unlike ``couple_thumb_index``. It is simply part of what the
+      grasp lock means: ``middle``, ``ring`` and ``pinky`` are commanded as ONE
+      group, each set to the MEDIAN of the three fingers' tracked (physical
+      openness) values.
+
+      Median, specifically, and not mean or min/max:
+        - Median is one of the three real fingers' own values, so the group
+          reaches what the consensus finger reaches. A mean would always sit
+          less committed than the operator's most-committed finger -- a
+          looser grip than intended -- and would launder the ring finger's
+          outlier calibration bound (``R_CLOSED`` 0.35 vs 0.48/0.49 for
+          middle/pinky) into all three channels, whereas the median rejects
+          exactly that kind of single-channel skew.
+        - Median is the only 3-input selector that survives one bad channel in
+          BOTH directions: ``min`` is a single-fault path to closure (one low
+          glitch closes all three onto whatever is in the hand), ``max`` a
+          single-fault path to release.
+        - Safety property: the median of three values always lies within
+          ``[min, max]`` of those same three values, so this can never command
+          any of the three channels to a pose it could not already reach on
+          its own -- the group only ever picks among poses already in play.
+
+      Like the coupled thumb (and unlike ``park``), the group value is a
+      TRACKED quantity, not a literal SDK target: it is computed from ``pre``
+      (each finger's physical openness, pre-flip) and then written into each
+      of the three channels through THAT channel's own ``flip`` -- not a
+      single shared flip -- so a mirrored MRP channel would still close as the
+      others close. (No MRP channel is flipped in the shipped config, so this
+      is a no-op there today; it is still implemented, since nothing else
+      about the coupling makes that assumption.) It is computed after the
+      thumb<-index coupling block, but the two are independent -- the group
+      reads only ``pre`` (which nothing mutates) and its channel set
+      (``middle``/``ring``/``pinky``) is disjoint from the thumb block's
+      (``thumb_flex``/``index``), so the ordering between the two blocks is
+      cosmetic; appending the group after the thumb block keeps that
+      hardware-validated block's diff untouched. Like the coupled thumb, it is
+      applied after the park loop (the narrower opt-in wins, so a park on an
+      MRP channel is overwritten by the group -- unreachable in the shipped
+      config, but implemented the same way for consistency), after the
+      ``last_unparked`` snapshot (so a UI can still show the operator's real
+      fingers underneath the group), and after the EMA (so each channel's
+      filter keeps tracking the real finger underneath and unlocking resumes
+      without a jump).
+
+    Static home gesture (thumbs-up while the arms home):
+      ``home_gesture()`` returns a fixed 6-channel pose -- default
+      ``HOME_GESTURE_OPENNESS`` (a thumbs-up: thumb extended and spread, the
+      other four fingers curled into a fist) -- for the ROS node to command
+      while the arms are still homing, before glove teleop takes over. Like
+      the coupled thumb (and unlike ``park``), the gesture is a
+      physical/tracked quantity, defined in PHYSICAL-openness terms, so it is
+      converted into this hand's SDK space by applying each channel's
+      ``flip`` on the way out -- otherwise a mirrored ``thumb_abd`` would
+      point the thumb the wrong way on that hand instead of mirroring the
+      other hand's pose. ``tuning``'s optional per-channel ``home_gesture``
+      key overrides the default for that channel (clamped to ``[0,
+      L6_OPEN]`` at ingest, like ``couple_low``). The method is pure: it does
+      not read or mutate ``self._last``, ``self.locked``, ``self._parks``, or
+      the thumb<-index coupling, so calling it never disturbs the EMA.
     """
 
     def __init__(
@@ -344,6 +421,13 @@ class CurlMapper:
         # short instead of closing all the way, and the thumb maps off the clamped
         # value so both saturate together. 0.0 (default) means no clamp.
         self._couple_index_low: float = 0.0
+        # Static home-gesture pose, in PHYSICAL-openness terms (see
+        # HOME_GESTURE_OPENNESS / home_gesture()), aligned to L6_SDK_ORDER.
+        # Defaults to the module constant; a tuning "home_gesture" entry below
+        # overrides individual channels.
+        self._home_gesture_pre: list[float] = [
+            HOME_GESTURE_OPENNESS[slot] for slot in L6_SDK_ORDER
+        ]
         if tuning:
             for i, slot in enumerate(L6_SDK_ORDER):
                 ch = tuning.get(slot) or {}
@@ -369,6 +453,12 @@ class CurlMapper:
                         self._couple_low = cl
                     elif slot == "index":
                         self._couple_index_low = cl
+                if "home_gesture" in ch:
+                    # Clamped on the way in, like couple_low above -- an
+                    # out-of-range pose value should never escape to home_gesture().
+                    self._home_gesture_pre[i] = float(
+                        np.clip(float(ch["home_gesture"]), 0.0, L6_OPEN)
+                    )
         # Runtime thumb<-index coupling flag (public, like self.locked): while
         # this AND self.locked are both True, thumb_flex is driven off the index
         # instead of its own metric (see the class docstring).
@@ -400,6 +490,33 @@ class CurlMapper:
         construction or changed since via ``set_park`` (including clearing a
         slot with ``set_park(slot, None)``)."""
         return tuple(slot for slot, pv in zip(L6_SDK_ORDER, self._parks) if pv is not None)
+
+    def home_gesture(self) -> list[float]:
+        """The static home-gesture pose as a per-hand SDK command: 6 floats in
+        L6_SDK_ORDER order, ready to send straight to this hand's ``set_angles``.
+
+        Default ``HOME_GESTURE_OPENNESS`` (a thumbs-up), overridable per-channel
+        via ``tuning``'s ``home_gesture`` key -- see ``self._home_gesture_pre``,
+        resolved once at construction.
+
+        The gesture is a physical/tracked quantity (like the coupled thumb),
+        NOT a literal SDK target like ``park`` -- so unlike ``park`` it passes
+        THROUGH each channel's ``flip`` on the way out: ``self._home_gesture_pre``
+        is stored in physical-openness terms shared by both hands, and
+        ``L6_OPEN - v`` is applied for every ``i in self._flip_slots`` to convert
+        it into this hand's SDK space. Skipping the flip here would leave a
+        mirrored ``thumb_abd`` pointing the thumb the wrong way on that hand
+        instead of reproducing the same physical thumbs-up as the other hand.
+
+        Pure: reads only ``self._home_gesture_pre``/``self._flip_slots`` (both
+        fixed at construction), and never touches ``self._last``,
+        ``self.locked``, ``self._parks``, or the thumb<-index coupling -- so
+        calling it never disturbs the EMA.
+        """
+        out = list(self._home_gesture_pre)
+        for i in self._flip_slots:
+            out[i] = L6_OPEN - out[i]
+        return out
 
     def _flex_percent(self, kp: np.ndarray, finger: str) -> float:
         chain = _FLEX_CHAINS[finger]
@@ -515,4 +632,31 @@ class CurlMapper:
                 out[_I_THUMB_FLEX] = (
                     L6_OPEN - v if _I_THUMB_FLEX in self._flip_slots else v
                 )
+
+            # MRP group: middle/ring/pinky move as ONE group, each commanded the
+            # MEDIAN of the three fingers' tracked (physical-openness) values.
+            # Unconditional -- part of what the grasp lock means, exactly like
+            # the thumb pinch above, not a separate opt-in flag. See the class
+            # docstring's "MRP group" section for why median (not mean/min/max).
+            #
+            # Like the coupled thumb, this is a TRACKED quantity, not a literal
+            # SDK target -- computed from `pre` (physical openness, pre-flip)
+            # and written out through EACH channel's OWN flip (not one shared
+            # flip), so a mirrored MRP channel would still close as the others
+            # close. (No MRP channel is flipped in the shipped config, so this
+            # is a no-op today; implemented correctly anyway.) It reads only
+            # `pre`, which nothing mutates, and its channel set is disjoint from
+            # the thumb block's above, so the two are independent and the
+            # ordering between them is cosmetic -- appending here keeps the
+            # hardware-validated thumb block's diff untouched. It is applied
+            # after the park loop (narrower opt-in wins, so a park on an MRP
+            # channel is overwritten -- unreachable in the shipped config, but
+            # implemented the same way for consistency), after the
+            # last_unparked snapshot (so a UI can still show the operator's
+            # real fingers underneath the group), and after the EMA (so each
+            # channel's filter keeps tracking the real finger underneath and
+            # unlocking resumes without a jump).
+            group = float(np.median([pre[i] for i in _I_MRP]))
+            for i in _I_MRP:
+                out[i] = L6_OPEN - group if i in self._flip_slots else group
         return out

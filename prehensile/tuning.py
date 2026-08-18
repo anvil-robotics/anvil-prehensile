@@ -6,17 +6,22 @@ passing CLI flags every run. Kept out of ``curlmap.py`` so that module stays
 pure-numpy and yaml-free (importable for the hardware-free tests).
 
 Channel names are the six L6 slots (``command.L6_SDK_ORDER``); the valid keys
-are ``gain``, ``pivot``, ``alpha``, ``flip``, ``park`` and ``couple_low``
-(thumb_abd's invert sense is set in ``profiles.py``, not here). ``flip``
-complements the channel's output (``100 - x``); it is the knob for a thumb
-that is mounted/oriented backwards on one hand. ``park`` is a
+are ``gain``, ``pivot``, ``alpha``, ``flip``, ``park``, ``couple_low`` and
+``home_gesture`` (thumb_abd's invert sense is set in ``profiles.py``, not
+here). ``flip`` complements the channel's output (``100 - x``); it is the knob
+for a thumb that is mounted/oriented backwards on one hand. ``park`` is a
 native-convention 0-100 value a channel is forced to while the mapper is
 locked (see ``CurlMapper.locked``/``set_park``), e.g. a grasp thumb posture.
 ``couple_low`` belongs to the thumb<-index coupling (see
 ``CurlMapper.couple_thumb_index``) and is valid on **only** its two channels --
 ``thumb_flex`` (the driven channel's output floor) and ``index`` (the driving
-finger's own command floor) -- see ``CHANNEL_SCOPED_KEYS``. Top-level entries
-may also be a ``left``/``right`` side section (itself a ``{channel: params}``
+finger's own command floor) -- see ``CHANNEL_SCOPED_KEYS``. ``home_gesture`` is
+valid on **every** channel: a per-channel physical-openness value (0-100) for
+the static pose ``CurlMapper.home_gesture()`` emits (e.g. for the ROS node to
+command while the arms are still homing); like ``couple_low`` -- and unlike
+``park`` -- it is a physical/tracked quantity, so it is applied through the
+channel's ``flip`` on the way out. Top-level entries may also be a
+``left``/``right`` side section (itself a ``{channel: params}``
 map) that ``resolve_tuning`` merges on top of the shared channels for that
 side only; the merge is per-KEY, so a side section that sets only ``flip``
 keeps the shared ``couple_low``. Unknown channels/keys -- and a
@@ -46,7 +51,7 @@ from prehensile.command import L6_SDK_ORDER
 DEFAULT_TUNING_PATH = Path(__file__).resolve().parent / "configs" / "curl_tuning.yml"
 
 VALID_CHANNELS = set(L6_SDK_ORDER)
-VALID_KEYS = {"gain", "pivot", "alpha", "flip", "park", "couple_low"}
+VALID_KEYS = {"gain", "pivot", "alpha", "flip", "park", "couple_low", "home_gesture"}
 VALID_SIDES = {"left", "right"}
 # Keys that only mean something on SPECIFIC channels. Accepting them elsewhere
 # would be a silent no-op -- exactly what this module's loud-failure contract
@@ -59,7 +64,7 @@ CHANNEL_SCOPED_KEYS = {"couple_low": frozenset({"thumb_flex", "index"})}
 
 def _coerce_params(params, where: str, channel: str) -> dict[str, float | bool]:
     """Validate ``params``' keys against ``VALID_KEYS`` and coerce each value:
-    ``gain``/``pivot``/``alpha``/``park``/``couple_low`` -> ``float``,
+    ``gain``/``pivot``/``alpha``/``park``/``couple_low``/``home_gesture`` -> ``float``,
     ``flip`` -> ``bool`` (NOT floated, so it stays a real bool). ``channel`` is the owning channel
     name, used to enforce ``CHANNEL_SCOPED_KEYS``. ``where`` is a
     caller-supplied description of the params' location, used in the raised
