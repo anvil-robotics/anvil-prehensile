@@ -8,7 +8,22 @@ dependencies = [
     "numpy",
     "pyyaml",
     "protobuf>=5",
+]
+
+# `l6` and `research` are separate extras (not one bundle) because they pull in
+# conflicting/heavy dependency sets for different use cases:
+#  - l6: talk to the real hardware over CAN. Pulls in `realhand`, which pins
+#    numpy>=2.2.6 and scipy>=1.15.3 -- exactly the version conflict that forces
+#    the downstream ROS deployment into its own virtualenv. Someone who only
+#    wants the curl map (or just this package's tests) should not be forced to
+#    resolve that pin, or a git URL, just to `pip install prehensile`.
+#  - research: the dex_retargeting optimizer path (`--map retarget`) and its
+#    MuJoCo/torch/wuji_sdk stack, unneeded by the curl-map-only path.
+[project.optional-dependencies]
+l6 = [
     "realhand @ git+https://github.com/RealHand-Robotics/realbot-python-sdk.git@83cc6ef0c1fcf4e1a433c405a231e69e2e714c9d",
+]
+research = [
     "dex-retargeting>=0.5.0",
     "mujoco>=3.10.0",
     "torch>=2.12.1",
@@ -26,11 +41,20 @@ testpaths = ["tests"]
 addopts = "-p no:launch_testing -p no:launch_ros"
 
 # Flat layout with several top-level dirs (assets/, configs/, tools/, scripts/):
-# tell setuptools to package ONLY the `prehensile` importable package. assets and
-# configs are reached by file path at runtime, not as package data.
+# tell setuptools to package ONLY the `prehensile` importable package. The
+# top-level assets/ and configs/ (retarget configs) are reached by file path at
+# runtime relative to a repo checkout, not as package data. prehensile/configs/
+# is different: it is INSIDE the package specifically so it ships in the wheel
+# (see [tool.setuptools.package-data] below) -- setuptools includes .py files
+# by default but silently drops everything else, so without an explicit entry
+# here the shipped curl_tuning.yml would silently vanish from non-editable
+# installs even though it lives under prehensile/.
 [build-system]
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["prehensile*"]
+
+[tool.setuptools.package-data]
+prehensile = ["configs/*.yml"]

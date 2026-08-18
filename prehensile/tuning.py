@@ -32,7 +32,18 @@ from prehensile.command import L6_SDK_ORDER
 
 # Shipped tuning file, resolved relative to the installed package so both the CLI
 # (which has its own ROOT) and the ROS hand node (which does not) can find it.
-DEFAULT_TUNING_PATH = Path(__file__).resolve().parent.parent / "configs" / "curl_tuning.yml"
+# The file lives INSIDE the package (prehensile/configs/curl_tuning.yml, see
+# [tool.setuptools.package-data] in pyproject.toml), so a single `.parent` off
+# this module's __file__ finds it under both an editable install (__file__ is
+# in the repo) and a normal wheel install (__file__ is in site-packages) --
+# unlike the old `.parent.parent`, which only ever resolved under editable
+# installs, since only the repo checkout has a `configs/` next to `prehensile/`.
+# importlib.resources is not used here: it returns a Traversable, not a Path,
+# and resolve_tuning()/the ROS node's `Path(tune_config)` fallback both need
+# real Path behaviour. importlib.resources would only be the right call if this
+# package had to run under zipimport (an unextracted .egg/.whl on sys.path),
+# which setuptools wheels installed normally do not do.
+DEFAULT_TUNING_PATH = Path(__file__).resolve().parent / "configs" / "curl_tuning.yml"
 
 VALID_CHANNELS = set(L6_SDK_ORDER)
 VALID_KEYS = {"gain", "pivot", "alpha", "flip", "park", "couple_low"}

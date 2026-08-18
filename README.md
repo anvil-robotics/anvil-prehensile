@@ -103,7 +103,7 @@ Specific to one command:
 Two files. `configs/real_hand_{left,right}.yml` affects **`--map retarget`
 only**: raise `scaling_factor` (1.15) if a fist does not reach ~0, `low_pass_alpha`
 (0.2) up if motion lags, down if it jitters. Everything for `--map curl` is in
-[`configs/curl_tuning.yml`](configs/curl_tuning.yml), self-documented in its
+[`prehensile/configs/curl_tuning.yml`](prehensile/configs/curl_tuning.yml), self-documented in its
 header comments.
 
 ## Technical

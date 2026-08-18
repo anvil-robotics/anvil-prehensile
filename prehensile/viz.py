@@ -22,8 +22,8 @@ By default (``--map curl``) the sim previews the direct per-finger curl map
 (``prehensile.curlmap``, the same path ``teleop.py`` drives): each L6 angle
 (0-100) is mapped back across its driver joint's URDF limit range and the mimic
 (*_dip) joints are propagated, so you see exactly what the curl command does to
-the hand. Tuning is always read from configs/curl_tuning.yml (see
-``prehensile.tuning``); there are no CLI tuning flags.
+the hand. Tuning is read from configs/curl_tuning.yml by default (see
+``prehensile.tuning``); pass --tune to use a different file.
 
 With ``--map retarget`` the sim is instead driven by the raw retargeted qpos
 (radians) -- the most faithful view of what retargeting produces, before the
@@ -193,6 +193,9 @@ def main():
     ap.add_argument("--map", choices=["retarget", "curl"], default="curl",
                     help="angle-mapping strategy to preview: the direct per-finger curl map "
                          "(default, see curlmap.py) or the dex_retargeting vector optimizer")
+    ap.add_argument("--tune", type=Path, default=DEFAULT_TUNING_PATH,
+                    help="curl tuning YAML (--map curl only); default is the shipped "
+                         f"{DEFAULT_TUNING_PATH.name} (see prehensile/tuning.py)")
     args = ap.parse_args()
 
     glove = GLOVES[args.glove]
@@ -211,9 +214,10 @@ def main():
     mapper = curl_plan = None
     if args.map == "curl":
         # abd_invert comes solely from the glove profile now (see teleop.py /
-        # profiles.py); tuning is always configs/curl_tuning.yml, and a
-        # missing thumb_flex.couple_low is now a hard error (see resolve_tuning).
-        tuning = resolve_tuning(DEFAULT_TUNING_PATH, side=hand.side, require_couple_low=True)
+        # profiles.py); tuning defaults to the shipped curl_tuning.yml but
+        # --tune can point at a different file, and a missing
+        # thumb_flex.couple_low is a hard error either way (see resolve_tuning).
+        tuning = resolve_tuning(args.tune, side=hand.side, require_couple_low=True)
         mapper = CurlMapper(side=hand.side, abd_invert=glove.abd_invert, tuning=tuning)
         curl_plan = build_curl_plan(model, URDF)
 

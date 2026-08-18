@@ -185,6 +185,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--map", choices=["retarget", "curl"], default="curl",
                     help="angle-mapping strategy: the direct per-finger curl map "
                          "(default, see curlmap.py) or the dex_retargeting vector optimizer")
+    ap.add_argument("--tune", type=Path, default=DEFAULT_TUNING_PATH,
+                    help="curl tuning YAML (--map curl only); default is the shipped "
+                         f"{DEFAULT_TUNING_PATH.name} (see prehensile/tuning.py)")
     return ap
 
 
@@ -207,11 +210,13 @@ def main():
     tuning = None
     mapper = None
     if args.map == "curl":
-        # DEFAULT_TUNING_PATH is the only tuning source now; a missing file or
-        # a missing thumb_flex.couple_low both raise (see resolve_tuning) --
-        # curl tuning is no longer something the hand can silently run without.
-        tuning = resolve_tuning(DEFAULT_TUNING_PATH, side=hand.side, require_couple_low=True)
-        print(f"curl tuning: {DEFAULT_TUNING_PATH}")
+        # args.tune defaults to DEFAULT_TUNING_PATH but --tune can point at a
+        # different file; a missing file or a missing thumb_flex.couple_low
+        # both raise regardless (see resolve_tuning) -- curl tuning is not
+        # something the hand can silently run without, on the shipped file or
+        # any other.
+        tuning = resolve_tuning(args.tune, side=hand.side, require_couple_low=True)
+        print(f"curl tuning: {args.tune}")
         # Print the RESOLVED bounds: couple_low can come from a per-side
         # section, so which value applies depends on --hand. (A side-only
         # couple_low no longer risks the other hand running unfloored --

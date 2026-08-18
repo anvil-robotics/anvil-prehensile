@@ -1248,12 +1248,18 @@ name = "prehensile"
 version = "1.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "dex-retargeting" },
-    { name = "mujoco" },
     { name = "numpy" },
     { name = "protobuf" },
     { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+l6 = [
     { name = "realhand" },
+]
+research = [
+    { name = "dex-retargeting" },
+    { name = "mujoco" },
     { name = "torch" },
     { name = "wuji-sdk" },
 ]
@@ -1265,15 +1271,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dex-retargeting", specifier = ">=0.5.0" },
-    { name = "mujoco", specifier = ">=3.10.0" },
+    { name = "dex-retargeting", marker = "extra == 'research'", specifier = ">=0.5.0" },
+    { name = "mujoco", marker = "extra == 'research'", specifier = ">=3.10.0" },
     { name = "numpy" },
     { name = "protobuf", specifier = ">=5" },
     { name = "pyyaml" },
-    { name = "realhand", git = "https://github.com/RealHand-Robotics/realbot-python-sdk.git?rev=83cc6ef0c1fcf4e1a433c405a231e69e2e714c9d" },
-    { name = "torch", specifier = ">=2.12.1" },
-    { name = "wuji-sdk", specifier = ">=2026.7.2" },
+    { name = "realhand", marker = "extra == 'l6'", git = "https://github.com/RealHand-Robotics/realbot-python-sdk.git?rev=83cc6ef0c1fcf4e1a433c405a231e69e2e714c9d" },
+    { name = "torch", marker = "extra == 'research'", specifier = ">=2.12.1" },
+    { name = "wuji-sdk", marker = "extra == 'research'", specifier = ">=2026.7.2" },
 ]
+provides-extras = ["l6", "research"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
