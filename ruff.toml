@@ -1,0 +1,82 @@
+# Lint config for the `prehensile` package.
+#
+# Picked empirically (ruff 0.15.11): every family selected below reports ZERO
+# findings on the tree as it stands, so the CI lint job is green the moment it
+# lands. `select = ["ALL"]` would report 874 findings here at this line length.
+#
+# Deliberately NOT enabled, with today's cost of turning each one on:
+#   I    (import order)  8 findings, all safe autofixes -- see `select` below.
+#   E501 (line length)   1 finding at 120 (prehensile/teleop.py:138 is 122 cols),
+#                        21 at 100, 111 at ruff's default 88. The comments and
+#                        docstrings in this repo are deliberately dense and
+#                        load-bearing; reflowing them is not a lint fix.
+#   B    (bugbear)       11: B905 x9 (zip() without strict=), B023, B904, B007.
+#                        Real, but each needs a per-call-site decision.
+#   UP   (pyupgrade)     5: UP035 x2, UP037 x2, UP041 -- all safe autofixes.
+#   N    (pep8-naming)   9: N806/N803 on rotation-matrix locals (R_cur, Qi) that
+#                        are named after the maths, plus N818.
+#   PT, PTH, TC, ARG, PYI, C4, FURB, SIM105, RUF046/RUF059: 1-3 findings each.
+#   D (126), ANN (238), S101 (161), T201 (98), PLR (38), TRY003 (21), EM (21),
+#   COM812 (19), BLE (11), SLF001 (11), INP001 (8), FBT (11): style positions
+#   this codebase does not take -- asserts in tests, print() in CLI tools, and
+#   no annotation/docstring mandate on every private helper.
+
+# Version-pinned in CI (.github/workflows/ci.yml runs `uvx ruff@0.15.11`).
+# Family selects like "PERF" or "RET" pick up NEW rules on a ruff upgrade, which
+# is exactly how a green-on-arrival config later goes red with no code change.
+# Bump the pin in the workflow deliberately, in a commit that fixes whatever the
+# newer ruff finds.
+
+target-version = "py312"
+
+# Not enforced as E501 (see above). Set so that length-aware rules and any
+# future `ruff format` agree with what the code already does (longest line: 122).
+line-length = 120
+
+# Generated protobuf modules and their sys.path shim: "not ours to lint or edit"
+# (prehensile/_vendor/__init__.py). 39 findings if linted.
+extend-exclude = ["prehensile/_vendor"]
+
+[lint]
+select = [
+    # --- Correctness ---
+    "F",                # pyflakes: undefined/unused names, bad f-strings
+    "E4", "E7", "E9",   # pycodestyle errors except E501 (ruff's own default set)
+    "W",                # trailing whitespace / missing final newline
+    "PLE",              # pylint's error class only (not PLR/PLC/PLW opinions)
+    "PGH",              # no blanket `# noqa` / bare `# type: ignore`
+    "RUF100",           # no stale `# noqa` left behind
+    "RUF200",           # pyproject.toml metadata stays parseable
+
+    # --- Bug-shaped patterns ---
+    "A",                # don't shadow builtins
+    "ASYNC",
+    "DTZ",              # no timezone-naive datetimes
+    "T10",              # no leftover pdb/breakpoint()
+    "LOG", "G",         # logging misuse, f-strings inside log calls
+    "TRY002", "TRY201", "TRY400", "TRY401",
+    "ISC",              # implicit string concat (usually a missing comma)
+    "SLOT",
+
+    # --- Clarity ---
+    "RET",              # unnecessary else/return juggling
+    "RSE",              # `raise X()` not `raise X`
+    "PIE",
+    "SIM2",             # boolean-expression simplifications
+    "FLY",              # static str.join -> f-string
+    "ERA",              # no commented-out code
+    "Q",                # consistent quote style
+    "ICN",              # numpy as np, etc.
+    "TID",              # no parent-relative imports
+    "FA",               # `from __future__ import annotations` where needed
+    "INT",
+
+    # --- Ecosystem ---
+    "NPY",              # deprecated numpy APIs
+    "PERF",
+    "YTT",
+
+    # Turn this on ONLY in a commit that also runs `ruff check --select I --fix`
+    # (8 files, 24 lines, all safe fixes, test suite unaffected).
+    # "I",
+]

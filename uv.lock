@@ -1266,6 +1266,7 @@ research = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "packaging" },
     { name = "pytest" },
 ]
 
@@ -1283,7 +1284,10 @@ requires-dist = [
 provides-extras = ["l6", "research"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "packaging" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "protobuf"

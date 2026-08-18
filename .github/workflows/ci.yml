@@ -1,0 +1,286 @@
+# CI for `prehensile`.
+#
+# The test suite splits along a hard dependency line, so the jobs do too:
+#
+#   lean  -- the 3 unconditional deps (numpy/pyyaml/protobuf) + pytest, i.e.
+#            exactly what `pip install prehensile` gives you. 15 of the 50 tests
+#            run there; the other 35 cannot even be COLLECTED without the
+#            `research` extra (prehensile/retarget.py imports dex_retargeting,
+#            tests/test_viz.py imports mujoco), and a collection error aborts the
+#            whole run -- hence the four --ignore flags rather than relying on
+#            per-file errors. Note tests/test_teleop.py is one of the four EVEN
+#            THOUGH prehensile/teleop.py itself no longer imports dex_retargeting
+#            at module scope (that import is now function-local to its
+#            `--map retarget` branch): the test file has its own top-level
+#            `from prehensile.retarget import L6Retargeter` (used to build a real
+#            retargeter in 3 of its 22 tests), which still drags in
+#            dex_retargeting for the whole module at collection time. Verified by
+#            hand: dropping this ignore does not raise the lean count to 37, it
+#            aborts the whole lean run with a collection ImportError (0 tests
+#            execute) -- pytest stops the entire session on any collection
+#            error, not just the offending file. This job gates pull requests.
+#   full  -- `.[research]`: all 50 tests. Even with CPU-only torch this is a
+#            ~1.7 GB environment (~2.8 GB of CUDA wheels if torch comes from
+#            default PyPI), so it runs on pushes to the default branch and on
+#            manual dispatch, not on every pull request.
+#   lint  -- `ruff check .` against the repo's ruff.toml, at a pinned version.
+#
+# SAFETY-CRITICAL, read before editing: tests/test_packaging.py is the
+# regression guard for the shipped tuning file (prehensile/configs/curl_tuning.yml)
+# staying inside the wheel. If it stops shipping, resolve_tuning() silently falls
+# back to defaults, thumb_flex.couple_low becomes 0, and the robot thumb closes
+# its full travel into the operator's fingers. That module is
+# `skipif`-ed when `uv` is not on PATH -- and uv is NOT preinstalled on
+# GitHub-hosted runners -- and two of its fixtures pytest.skip() when the
+# fresh-venv wheel install cannot reach the network. All three paths leave the
+# exit status at 0. So every job that runs it (a) installs uv explicitly via
+# astral-sh/setup-uv, and (b) pipes the run through
+# .github/scripts/check_pytest_report.py, which reads pytest's JUnit XML and
+# FAILS the job if the guard's testcases were skipped, absent, or fewer than
+# expected. Do not drop that step; a green tick from a skipped guard is worse
+# than no CI.
+#
+# A second, unrelated hazard for the same guard: `build/` is a setuptools
+# build-cache directory that installing "." from this checkout (e.g.
+# `pip install .`, or the wheel build inside tests/test_packaging.py) can leave
+# behind in the repo's own working tree, holding a COPY of
+# prehensile/configs/curl_tuning.yml from whenever it was last populated. If
+# that file or [tool.setuptools.package-data] ever regresses, a stale
+# build/lib copy can get bundled into a later wheel build and mask the exact
+# regression this guard exists to catch -- reproduced by hand: with
+# tests/test_packaging.py's own `_clean_build_artifacts()` stubbed out, a fully
+# regressed tree still reported "3 passed" because a leftover build/lib copy
+# papered over it. Both `lean` and `full` therefore `rm -rf build` immediately
+# before running pytest. Do NOT also delete `*.egg-info` there: `uv sync`
+# recreates prehensile.egg-info as a normal side effect of the editable install
+# it manages (verified by hand: deleting it and re-running `uv sync` just
+# rebuilds it), so removing it is not guarding against anything -- only
+# `build/` is the stale cache.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Every push to `main` shares this same group key (ci-CI-refs/heads/main), so
+  # an unconditional cancel-in-progress would let merge N+1 cancel merge N's
+  # `full` job -- the only job that runs the heavy 35 tests on a merged commit
+  # -- and a cancelled run is neither pass nor fail. Cancellation is for
+  # superseded PR pushes only; a push-to-main run must always finish, because
+  # it carries the packaging guard.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # requires-python = ">=3.12"; 3.12 is the floor and what the suite is verified on.
+  PYTHON_VERSION: "3.12"
+  # Pinned deliberately: ruff.toml selects whole rule FAMILIES, which pick up new
+  # rules on a ruff upgrade. An unpinned ruff turns a green config red with no
+  # code change. Bump this in a commit that also fixes what the newer ruff finds.
+  RUFF_VERSION: "0.15.11"
+  # Pinned so `uv build --wheel` (used by tests/test_packaging.py) and the
+  # resolver behave identically to the versions this workflow was verified on.
+  UV_VERSION: "0.11.26"
+
+jobs:
+  lint:
+    # NOTE: jobs.<id>.name cannot read the `env` context, so no version here.
+    name: lint (ruff, pinned)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      # `uvx ruff@<version>` pins the linter itself; ruff.toml pins the rules.
+      # `--output-format github` turns findings into inline PR annotations.
+      - name: ruff check
+        run: uvx ruff@${{ env.RUFF_VERSION }} check --no-cache --output-format github .
+
+      # A green `ruff check` above is indistinguishable from one that linted
+      # ZERO files (bad extend-exclude, wrong cwd, ruff finding nothing to walk)
+      # -- both exit 0. Prove it actually saw the tree: this repo has 29
+      # lintable files today; 25 is a safety margin below that, not the exact
+      # count, so adding a file doesn't require bumping this.
+      - name: ruff must have actually linted the tree (not zero files)
+        run: |
+          count=$(uvx ruff@${{ env.RUFF_VERSION }} check --no-cache --show-files . | wc -l)
+          echo "ruff would check $count file(s)"
+          test "$count" -ge 25
+
+  lean:
+    name: lean (unconditional deps only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Real CPython, not a uv-managed build: tests/test_packaging.py creates a
+      # fresh venv with `sys.executable -m venv` and pip-installs a wheel into
+      # it, so the interpreter running pytest must have a working venv+pip.
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      # Hard pre-step, not a formality: without uv on PATH the whole of
+      # tests/test_packaging.py skips silently and this job goes green having
+      # checked nothing about the wheel. Fail here instead, loudly.
+      - name: uv must be on PATH (the packaging guard depends on it)
+        run: uv --version
+
+      # `uv sync --locked` == the 3 unconditional deps + the `dev` group
+      # (pytest>=8), resolved from the committed uv.lock. No extras: this job
+      # must look like a plain `pip install prehensile`. --locked fails rather
+      # than silently re-resolving if uv.lock has drifted from pyproject.toml.
+      - name: Install unconditional deps + pytest (no extras)
+        run: uv sync --locked --python "${{ steps.py.outputs.python-path }}"
+
+      # The point of this job is the LEAN environment. If the heavy stack ever
+      # leaks into the unconditional dependencies, the 4 --ignore flags below
+      # would start hiding tests that could have run, and the extras split this
+      # repo maintains would be silently broken.
+      - name: Assert the lean env really is lean
+        run: |
+          .venv/bin/python - <<'PY'
+          import importlib.util
+          import sys
+
+          heavy = [m for m in ("torch", "mujoco", "dex_retargeting", "wuji_sdk", "realhand")
+                   if importlib.util.find_spec(m) is not None]
+          if heavy:
+              sys.exit(f"lean job is not lean -- these importable without any extra: {heavy}")
+          print("lean env confirmed: none of torch/mujoco/dex_retargeting/wuji_sdk/realhand present")
+          PY
+
+      # Cheap (~2s), no install, no hardware: proves the `l6` extra's git URL
+      # (pinned to a force-pushable sha on a third-party repo) still resolves,
+      # and that its numpy/scipy pins are still satisfiable -- without pulling
+      # any of it into this job's venv. --dry-run genuinely installs nothing:
+      # verified by hand, `uv pip list` before/after this command is identical.
+      - name: The l6 extra must still resolve (git URL + numpy/scipy pins)
+        run: uv pip install --dry-run --python .venv/bin/python ".[l6]"
+
+      # See the SAFETY-CRITICAL header: a stale build/lib copy of
+      # curl_tuning.yml can otherwise survive from a previous local install of
+      # "." and mask a real regression. Only build/ -- NOT *.egg-info, which
+      # `uv sync` above already (re)created as a normal part of its own job.
+      - name: Clear stale setuptools build cache
+        run: rm -rf build
+
+      # The exact invocation verified for the lean set (15 passed). --ignore, not
+      # explicit paths, so a NEW lean test file is picked up automatically; the
+      # inverse failure mode (a new heavy-import test file breaks this job) is the
+      # louder and better one. -rs makes any skip visible in the log; the JUnit
+      # report is what the next step makes decisions on.
+      - name: Run the lean subset (expects 15 passed)
+        run: |
+          .venv/bin/python -m pytest \
+            -p no:cacheprovider -rs \
+            --ignore=tests/test_viz.py \
+            --ignore=tests/test_teleop.py \
+            --ignore=tests/test_right_config.py \
+            --ignore=tests/test_udcap_retarget_chain.py \
+            --junit-xml="${{ runner.temp }}/pytest-lean.xml"
+
+      # THE load-bearing check (see the header). Skipped == failed here. The
+      # file-level --require is a backstop; the two ::NAME pins make sure the
+      # specific load-bearing testcases ran and passed by NAME, not just that
+      # *some* three testcases in the file did (a file-level count alone is
+      # satisfied by any three passing tests, including ones that were added
+      # later and prove nothing about the wheel).
+      - name: The packaging guard must have actually executed
+        run: |
+          .venv/bin/python .github/scripts/check_pytest_report.py \
+            "${{ runner.temp }}/pytest-lean.xml" \
+            --min-tests 15 \
+            --require tests/test_packaging.py=3 \
+            --require tests/test_packaging.py::test_wheel_ships_curl_tuning_yaml_with_real_content \
+            --require tests/test_packaging.py::test_resolve_tuning_returns_real_tuning_after_fresh_non_editable_install
+
+  full:
+    name: full (.[research], whole suite)
+    # Not on pull requests: see the header. `on.push.branches` already limits
+    # pushes to the default branch, so this leaves push + workflow_dispatch.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          # This job installs from pyproject.toml rather than uv.lock, and
+          # setup-uv's default cache key only watches uv.lock/requirements*.txt.
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+
+      - name: uv must be on PATH (the packaging guard depends on it)
+        run: uv --version
+
+      - name: Create the venv
+        run: uv venv --python "${{ steps.py.outputs.python-path }}"
+
+      # --torch-backend cpu resolves torch from the PyTorch CPU index:
+      # 191.8 MB instead of ~2.8 GB of CUDA wheels that these tests never touch
+      # (dex-retargeting's own ImportError message says CPU-only torch is
+      # enough). torch is here only because dex_retargeting/__init__.py raises
+      # without it -- nothing in prehensile imports torch.
+      #
+      # Not `uv sync --locked --extra research`, which WOULD be deterministic but
+      # would pull the CUDA torch pinned in uv.lock. The trade-off is deliberate:
+      # this job floats above the `>=` floors and is therefore also the
+      # early-warning signal for upstream drift (torch/mujoco/wuji-sdk all
+      # resolve well above their floors today).
+      - name: Install .[research] with CPU-only torch
+        run: uv pip install --python .venv/bin/python --torch-backend cpu ".[research]" "pytest>=8"
+
+      - name: Show the resolved research stack
+        run: uv pip list --python .venv/bin/python
+
+      # See the SAFETY-CRITICAL header: a stale build/lib copy of
+      # curl_tuning.yml can otherwise survive from a previous local install of
+      # "." and mask a real regression. Only build/ -- NOT *.egg-info.
+      - name: Clear stale setuptools build cache
+        run: rm -rf build
+
+      - name: Run the whole suite (expects 50 passed)
+        run: |
+          .venv/bin/python -m pytest \
+            -p no:cacheprovider -rs \
+            --junit-xml="${{ runner.temp }}/pytest-full.xml"
+
+      # See the lean job's identical step for why the two ::NAME pins are here
+      # alongside the file-level count.
+      - name: The packaging guard must have actually executed
+        run: |
+          .venv/bin/python .github/scripts/check_pytest_report.py \
+            "${{ runner.temp }}/pytest-full.xml" \
+            --min-tests 50 \
+            --require tests/test_packaging.py=3 \
+            --require tests/test_packaging.py::test_wheel_ships_curl_tuning_yaml_with_real_content \
+            --require tests/test_packaging.py::test_resolve_tuning_returns_real_tuning_after_fresh_non_editable_install

@@ -33,12 +33,23 @@ research = [
 [dependency-groups]
 dev = [
     "pytest>=8",
+    # tests/test_packaging.py does `from packaging.requirements import
+    # Requirement`. It only works today because pytest itself depends on
+    # `packaging>=22` transitively -- declare it explicitly so the test suite
+    # does not silently rely on another package's dependency choice.
+    "packaging",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-p no:launch_testing -p no:launch_ros"
+# Pin the JUnit XML shape check_pytest_report.py depends on: xunit2 emits a
+# dotted `classname` but NOT a `file=` attribute on <testcase> -- classname is
+# what that script's _matches_file actually matches on today (file is the
+# defensive fallback). A future pytest changing its *default* junit_family
+# must not silently move which attribute is load-bearing.
+junit_family = "xunit2"
 
 # Flat layout with several top-level dirs (assets/, configs/, tools/, scripts/):
 # tell setuptools to package ONLY the `prehensile` importable package. The
