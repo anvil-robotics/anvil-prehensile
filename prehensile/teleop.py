@@ -29,7 +29,13 @@ from prehensile.command import qpos_index_map, qpos_to_l6_angles
 from prehensile.curlmap import CurlMapper
 from prehensile.profiles import GLOVES, HANDS
 from prehensile.tuning import DEFAULT_TUNING_PATH, resolve_tuning
-from prehensile.retarget import L6Retargeter
+
+# prehensile.retarget (dex_retargeting) is imported lazily, function-locally in
+# main()'s --map retarget branch below -- a bare `pip install prehensile` (no
+# extras) doesn't have dex_retargeting, and the default --map curl path never
+# touches a retargeter (see loop()'s short-circuit at the `mapper is not None`
+# check), so importing it at module scope would break `import prehensile.teleop`
+# for the common case.
 
 ROOT = Path(__file__).resolve().parent.parent
 URDF_DIR = ROOT / "assets" / "realhand_description"
@@ -199,16 +205,13 @@ def main():
     CONFIG = ROOT / "configs" / hand.config
     interface = args.interface or hand.interface
 
-    print(f"Building retargeter (glove={glove.name}, hand={hand.side})...")
-    retargeter = L6Retargeter(CONFIG, URDF_DIR, side=hand.side)
-    index_map = qpos_index_map(retargeter.joint_names)
-    print(f"qpos index map {JOINTS} -> {index_map}")
-
     # abd_invert now comes solely from the glove profile -- there is no CLI
     # override anymore.
     abd_invert = glove.abd_invert
     tuning = None
     mapper = None
+    retargeter = None
+    index_map = None
     if args.map == "curl":
         # args.tune defaults to DEFAULT_TUNING_PATH but --tune can point at a
         # different file; a missing file or a missing thumb_flex.couple_low
@@ -229,6 +232,15 @@ def main():
         print(f"thumb-index couple: ON (thumb_flex couple_low={low:g}, "
               f"{idx_note}, hand={hand.side})")
         mapper = CurlMapper(side=hand.side, abd_invert=abd_invert, tuning=tuning)
+    elif args.map == "retarget":
+        # dex_retargeting imported only here so the default curl path (and a
+        # bare `pip install prehensile`) never needs it.
+        from prehensile.retarget import L6Retargeter
+
+        print(f"Building retargeter (glove={glove.name}, hand={hand.side})...")
+        retargeter = L6Retargeter(CONFIG, URDF_DIR, side=hand.side)
+        index_map = qpos_index_map(retargeter.joint_names)
+        print(f"qpos index map {JOINTS} -> {index_map}")
 
     try:
         source_cm = glove.build_source(hand.side, args.port)
