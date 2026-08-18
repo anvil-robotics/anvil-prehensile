@@ -42,9 +42,11 @@ URDF_DIR = ROOT / "assets" / "realhand_description"
 JOINTS = ["thumb_flex", "thumb_abd", "index", "middle", "ring", "pinky"]
 # (driven, source) channels of the thumb<-index coupling, for the readout marker.
 _COUPLED_PAIR = ("thumb_flex", "index")
+# Channels of the MRP (middle/ring/pinky) grasp group, for the readout marker.
+_MRP_GROUP = ("middle", "ring", "pinky")
 
 
-def _fmt(angles, parked=(), coupled=None, floored=None):
+def _fmt(angles, parked=(), coupled=None, floored=None, grouped=None):
     """Format the 6-channel angle readout, e.g. ``"thumb_flex= 82.3  ..."``.
 
     The optional markers call out channels whose displayed number is the live
@@ -58,6 +60,9 @@ def _fmt(angles, parked=(), coupled=None, floored=None):
     thumb<-index coupling -> ``"COUPLED <driven><-<source>"``.
     ``floored`` is an optional ``(channel, value)`` pair for the coupling's floor
     on the driving finger's own command -> ``"FLOOR <channel>=<value>"``.
+    ``grouped`` is an optional channel-name tuple (e.g. ``_MRP_GROUP``) for the
+    MRP grasp group -> ``"GROUP <a>=<b>=<c>"``. It is rendered last, since the
+    group is CurlMapper's last-applied step in the pipeline.
     """
     line = "  ".join(f"{n}={a:5.1f}" for n, a in zip(JOINTS, angles))
     marks = []
@@ -67,6 +72,8 @@ def _fmt(angles, parked=(), coupled=None, floored=None):
         marks.append(f"COUPLED {coupled[0]}<-{coupled[1]}")
     if floored:
         marks.append(f"FLOOR {floored[0]}={floored[1]:g}")
+    if grouped:
+        marks.append(f"GROUP {'='.join(grouped)}")
     if marks:
         line += "  [" + "  ".join(marks) + "]"
     return line
@@ -107,9 +114,13 @@ def loop(source, retargeter, index_map, sink, fps, invert_flex=True, mapper=None
     ``couple_thumb_index`` on, a ``COUPLED thumb_flex<-index`` segment joins the
     same bracket -- plus ``FLOOR index=<v>`` when the coupling also clamps the
     index -- and every channel the coupling writes is dropped from the ``PARKED``
-    list (the coupling is applied after the park, so it owns those). The
-    ``--map retarget`` path (``mapper is None``) is unaffected either way: plain
-    ``angles``, no marker.
+    list (the coupling is applied after the park, so it owns those). A
+    ``GROUP middle=ring=pinky`` segment joins the same bracket too, unconditionally,
+    while locked -- the MRP grasp group is simply part of what the lock means, not
+    a separate opt-in flag like the coupling -- and middle/ring/pinky are likewise
+    dropped from the ``PARKED`` list (the group is applied after the park too, so
+    it owns those channels). The ``--map retarget`` path (``mapper is None``) is
+    unaffected either way: plain ``angles``, no marker.
     """
     budget = 1.0 / fps
     last_kp = None
@@ -149,22 +160,26 @@ def loop(source, retargeter, index_map, sink, fps, invert_flex=True, mapper=None
             coupled = _COUPLED_PAIR if mapper.couple_thumb_index else None
             floor = mapper.couple_index_floor if coupled else None
             floored = (_COUPLED_PAIR[1], floor) if floor is not None else None
+            grouped = _MRP_GROUP  # unconditional while locked -- not gated on a flag
             parked = mapper.parked_channels
+            # Coupling and the MRP group are both applied after the park
+            # override, so each owns the channels it writes -- don't report
+            # those as PARKED as well (a park on a coupling channel is
+            # legitimate, see configs/curl_tuning.yml; a park on an MRP channel
+            # is reachable via CurlMapper.set_park).
+            owned = set(grouped)
             if coupled:
-                # Coupling is applied after the park override, so it owns the
-                # channels it writes -- don't report those as PARKED as well (a
-                # park on either channel is legitimate; see configs/curl_tuning.yml).
-                owned = {coupled[0]} | ({coupled[1]} if floored else set())
-                parked = tuple(ch for ch in parked if ch not in owned)
+                owned |= {coupled[0]} | ({coupled[1]} if floored else set())
+            parked = tuple(ch for ch in parked if ch not in owned)
         else:
-            display, parked, coupled, floored = angles, (), None, None
+            display, parked, coupled, floored, grouped = angles, (), None, None, None
 
         if t0 - last_print > 0.08:  # throttle console to ~12 Hz
             # ljust to the PREVIOUS redraw's raw width (not a fixed suffix): if
             # the line just shrank (e.g. unlocking drops "  [PARKED ...]"), this
             # pads it out far enough to fully overwrite the old one in place --
             # a fixed few-space suffix isn't enough once the marker is involved.
-            content = _fmt(display, parked, coupled, floored)
+            content = _fmt(display, parked, coupled, floored, grouped)
             print("\r" + content.ljust(prev_len), end="", flush=True)
             prev_len = len(content)
             last_print = t0

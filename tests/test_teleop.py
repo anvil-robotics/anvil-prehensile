@@ -1,41 +1,22 @@
 """TDD validators for prehensile/teleop.py (UDCap -> L6 teleop port).
 
-Headless + hardware-free: the dry-run path needs only the UDP source, so we drive
-it with a synthetic loopback datagram (built like tests/test_udcap.py does). The
---live L6 path, its 3-2-1 countdown, and the CAN error handling are deferred to
-hardware acceptance with the user (`uv run python -m prehensile.teleop --live`).
+Headless + hardware-free, and deliberately also DEPENDENCY-free: nothing here
+imports prehensile.retarget, so the whole module collects and runs on a bare
+`pip install prehensile` (no `research` extra) -- which is what lets CI's lean
+job, the pull-request gate, actually run these tests. The three teleop tests
+that do need a real L6Retargeter live in tests/test_teleop_retarget.py; keep
+this file's import list clean of the heavy stack. The --live L6 path, its 3-2-1
+countdown, and the CAN error handling are deferred to hardware acceptance with
+the user (`uv run python -m prehensile.teleop --live`).
 """
 
 import itertools
-import socket
-import time
-from pathlib import Path
 
 import pytest
 from prehensile import fk
-from prehensile.command import qpos_index_map
 from prehensile.curlmap import CurlMapper
 from prehensile.profiles import GLOVES, HANDS
-from prehensile.udcap import UDCapSource
-from prehensile._vendor.udex_protobuf import handdriver_teleop_pb2 as pb2  # for building a synthetic datagram
 from prehensile import teleop
-from prehensile.retarget import L6Retargeter
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-
-CONFIG = _REPO_ROOT / "configs" / "real_hand_left.yml"
-URDF_DIR = _REPO_ROOT / "assets" / "realhand_description"
-
-
-def _make_quat_proto(quats_15x4, side="left") -> bytes:
-    """A serialized TeleopDataQuat with the given side's 15 joint quats set."""
-    msg = pb2.TeleopDataQuat()
-    hand = msg.LeftHand if side == "left" else msg.RightHand
-    hand.serialNumber = "UDXST4810L" if side == "left" else "UDXST4810R"
-    for q in quats_15x4:
-        j = hand.joints.add()
-        j.x, j.y, j.z, j.w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-    return msg.SerializeToString()
 
 
 def test_glove_and_hand_profiles():
@@ -58,37 +39,6 @@ def test_glove_and_hand_profiles():
         assert hasattr(src, "__enter__") and hasattr(src, "__exit__")
     finally:
         src.close()
-
-
-def test_frame_to_angles_on_synthetic_frame():
-    """keypoints -> 6 L6 angles in [0,100] (the whole command step, no socket)."""
-    retargeter = L6Retargeter(CONFIG, URDF_DIR, side="left")
-    index_map = qpos_index_map(retargeter.joint_names)
-    kp = fk.keypoints_from_quats(fk.identity_quats(fk.FK_MODE), fk.FK_MODE)
-    angles = teleop.frame_to_angles(kp, retargeter, index_map)
-    assert angles is not None
-    assert len(angles) == 6
-    assert all(0.0 <= a <= 100.0 for a in angles)
-
-
-def test_dry_run_receive_to_angles_over_loopback():
-    """The full dry-run path headless: UDCapSource.poll() -> frame_to_angles -> 6 angles."""
-    retargeter = L6Retargeter(CONFIG, URDF_DIR, side="left")
-    index_map = qpos_index_map(retargeter.joint_names)
-    data = _make_quat_proto(fk.identity_quats(fk.FK_MODE), side="left")
-    with UDCapSource(port=0, side="left") as src:
-        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sender.sendto(data, ("127.0.0.1", src.port))
-        finally:
-            sender.close()
-        time.sleep(0.05)  # let the kernel enqueue the datagram on loopback
-        kp = src.poll()
-    assert kp is not None
-    angles = teleop.frame_to_angles(kp, retargeter, index_map)
-    assert angles is not None
-    assert len(angles) == 6
-    assert all(0.0 <= a <= 100.0 for a in angles)
 
 
 # -- Phase 2: bButton park-lock toggle + console display (_fmt / loop()) --------- #
@@ -239,25 +189,13 @@ def test_loop_source_without_bbutton_never_locks_and_does_not_raise():
     assert len(sink.calls) == 3
 
 
-def test_loop_retarget_path_ignores_button_and_has_no_marker(capsys):
-    """mapper=None (--map retarget): a bButton press must not crash (no
-    mapper.locked to touch) and the readout must never carry a marker."""
-    retargeter = L6Retargeter(CONFIG, URDF_DIR, side="left")
-    index_map = qpos_index_map(retargeter.joint_names)
-    source = _ScriptedButtonSource([(_identity_kp(), True)])
-    sink = _RecordingSink()
-    with pytest.raises(_StopScript):
-        teleop.loop(source, retargeter, index_map, sink, fps=1000.0, mapper=None)
-    assert len(sink.calls) == 1
-    assert "[PARKED" not in capsys.readouterr().out
-
-
 def test_loop_locked_display_shows_tracked_value_sink_gets_parked(capsys):
     """While locked: the sink gets the real (parked) command, but the console
     readout shows the live tracked value underneath plus the marker."""
     # couple_thumb_index=False: this test is isolated to park behaviour (now
     # that coupling defaults on, leaving it enabled would also print a COUPLED
-    # segment and break the exact "[PARKED thumb_abd]" match below).
+    # segment and break the exact bracket match below). The GROUP segment is
+    # there regardless -- the MRP grasp group is unconditional under the lock.
     mapper = CurlMapper(side="left", tuning={"thumb_abd": {"park": 5.0}},
                         couple_thumb_index=False)
     source = _ScriptedButtonSource([(_identity_kp(), True)])
@@ -272,15 +210,16 @@ def test_loop_locked_display_shows_tracked_value_sink_gets_parked(capsys):
     assert tracked == 0.0  # the identity pose's genuine tracked reading (see _identity_kp)
 
     out = capsys.readouterr().out
-    assert "[PARKED thumb_abd]" in out
+    assert "[PARKED thumb_abd  GROUP middle=ring=pinky]" in out
     assert f"thumb_abd={tracked:5.1f}" in out       # displayed: the tracked value...
     assert f"thumb_abd={5.0:5.1f}" not in out        # ...never the parked one
 
 
 def test_loop_unlocked_display_has_no_marker_even_with_a_park_configured(capsys):
     """A configured park value alone must not show the marker -- only actually
-    being locked does. (Distinct from the mapper=None case above: here the
-    mapper exists and DOES have a parked channel, it's just never engaged.)"""
+    being locked does. (Distinct from the mapper=None case in
+    tests/test_teleop_retarget.py: here the mapper exists and DOES have a parked
+    channel, it's just never engaged.)"""
     mapper = CurlMapper(side="left", tuning={"thumb_abd": {"park": 5.0}})
     assert mapper.parked_channels == ("thumb_abd",)
     source = _ScriptedButtonSource([(_identity_kp(), False)])  # bButton never pressed
@@ -322,8 +261,8 @@ def test_loop_redraw_padding_erases_locked_marker_residue(monkeypatch, capsys):
     segments = capsys.readouterr().out.split("\r")[1:]  # drop the empty pre-"\r" piece
     assert len(segments) == 3  # one redraw per frame -- confirms the fake clock design
     locked_line, still_locked_line, unlocked_line = segments
-    assert "[PARKED thumb_abd]" in locked_line
-    assert "[PARKED thumb_abd]" in still_locked_line
+    assert "[PARKED thumb_abd  GROUP middle=ring=pinky]" in locked_line
+    assert "[PARKED thumb_abd  GROUP middle=ring=pinky]" in still_locked_line
     assert "[PARKED" not in unlocked_line
     # The old fixed 4-space suffix could strand the marker on screen; the fix
     # must pad the shorter unlocked redraw out to fully cover the prior one.
@@ -386,7 +325,7 @@ def test_loop_no_coupled_marker_when_coupling_disabled_at_construction(capsys):
     with pytest.raises(_StopScript):
         teleop.loop(source, None, None, sink, fps=1000.0, mapper=mapper)
     out = capsys.readouterr().out
-    assert "[PARKED thumb_abd]" in out
+    assert "[PARKED thumb_abd  GROUP middle=ring=pinky]" in out
     assert "COUPLED" not in out
 
 
@@ -396,6 +335,26 @@ def test_fmt_with_index_floor_appends_floor_segment():
     angles = [82.3, 47.1, 91.0, 88.4, 90.2, 89.7]
     line = teleop._fmt(angles, (), coupled=("thumb_flex", "index"), floored=("index", 20.0))
     assert line.endswith("  [COUPLED thumb_flex<-index  FLOOR index=20]")
+
+
+def test_fmt_with_grouped_only_appends_group_marker():
+    """grouped alone renders its own segment, with no PARKED/COUPLED/FLOOR text."""
+    angles = [82.3, 47.1, 91.0, 88.4, 90.2, 89.7]
+    line = teleop._fmt(angles, (), grouped=("middle", "ring", "pinky"))
+    assert line.endswith("  [GROUP middle=ring=pinky]")
+    assert "PARKED" not in line
+    assert "COUPLED" not in line
+
+
+def test_fmt_composes_all_markers_in_one_bracket():
+    """All four markers share a single bracket, in PARKED -> COUPLED -> FLOOR ->
+    GROUP order (GROUP last, since it's CurlMapper's last-applied step)."""
+    angles = [82.3, 47.1, 91.0, 88.4, 90.2, 89.7]
+    line = teleop._fmt(angles, ("thumb_abd",), coupled=("thumb_flex", "index"),
+                       floored=("index", 20.0), grouped=("middle", "ring", "pinky"))
+    assert line.endswith(
+        "  [PARKED thumb_abd  COUPLED thumb_flex<-index  FLOOR index=20  GROUP middle=ring=pinky]"
+    )
 
 
 def test_loop_index_floor_clamps_sink_and_marks_the_readout(capsys):

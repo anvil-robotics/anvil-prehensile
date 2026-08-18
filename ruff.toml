@@ -34,7 +34,7 @@ target-version = "py312"
 line-length = 120
 
 # Generated protobuf modules and their sys.path shim: "not ours to lint or edit"
-# (prehensile/_vendor/__init__.py). 39 findings if linted.
+# (prehensile/_vendor/__init__.py). 67 findings if linted.
 extend-exclude = ["prehensile/_vendor"]
 
 [lint]

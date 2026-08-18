@@ -3,23 +3,29 @@
 # The test suite splits along a hard dependency line, so the jobs do too:
 #
 #   lean  -- the 3 unconditional deps (numpy/pyyaml/protobuf) + pytest, i.e.
-#            exactly what `pip install prehensile` gives you. 15 of the 50 tests
-#            run there; the other 35 cannot even be COLLECTED without the
-#            `research` extra (prehensile/retarget.py imports dex_retargeting,
-#            tests/test_viz.py imports mujoco), and a collection error aborts the
-#            whole run -- hence the four --ignore flags rather than relying on
-#            per-file errors. Note tests/test_teleop.py is one of the four EVEN
-#            THOUGH prehensile/teleop.py itself no longer imports dex_retargeting
-#            at module scope (that import is now function-local to its
-#            `--map retarget` branch): the test file has its own top-level
-#            `from prehensile.retarget import L6Retargeter` (used to build a real
-#            retargeter in 3 of its 22 tests), which still drags in
-#            dex_retargeting for the whole module at collection time. Verified by
-#            hand: dropping this ignore does not raise the lean count to 37, it
-#            aborts the whole lean run with a collection ImportError (0 tests
-#            execute) -- pytest stops the entire session on any collection
-#            error, not just the offending file. This job gates pull requests.
-#   full  -- `.[research]`: all 50 tests. Even with CPU-only torch this is a
+#            exactly what `pip install prehensile` gives you. Everything that can
+#            run without the `research` extra runs here; the files that cannot
+#            even be COLLECTED without it (prehensile/retarget.py imports
+#            dex_retargeting, tests/test_viz.py imports mujoco) are named in the
+#            four --ignore flags below rather than left to per-file errors,
+#            because pytest stops the ENTIRE session on any collection error, not
+#            just the offending file -- verified by hand: dropping an ignore does
+#            not merely lose that file's tests, it aborts the lean run with a
+#            collection ImportError and 0 tests execute.
+#            tests/test_teleop.py used to be one of the four EVEN THOUGH
+#            prehensile/teleop.py itself does not import dex_retargeting at
+#            module scope (that import is function-local to its `--map retarget`
+#            branch): the test file carried its own top-level
+#            `from prehensile.retarget import L6Retargeter`, needed by only 3 of
+#            its tests, and that one line cost this gate the file's ~20 other
+#            hardware-free tests. Those 3 now live in
+#            tests/test_teleop_retarget.py, which is what this job ignores in its
+#            place. Deliberately a file split and NOT an importorskip/skipif: the
+#            check_pytest_report.py step below treats a skip as a FAILURE by
+#            design, so a skip-based fix would turn this job red instead of
+#            widening it. This job gates pull requests.
+#   full  -- `.[research]`: the whole suite, lean's tests plus the ones that need
+#            the heavy extras. Even with CPU-only torch this is a
 #            ~1.7 GB environment (~2.8 GB of CUDA wheels if torch comes from
 #            default PyPI), so it runs on pushes to the default branch and on
 #            manual dispatch, not on every pull request.
@@ -72,7 +78,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   # Every push to `main` shares this same group key (ci-CI-refs/heads/main), so
   # an unconditional cancel-in-progress would let merge N+1 cancel merge N's
-  # `full` job -- the only job that runs the heavy 35 tests on a merged commit
+  # `full` job -- the only job that runs the heavy, extras-only tests on a merged commit
   # -- and a cancelled run is neither pass nor fail. Cancellation is for
   # superseded PR pushes only; a push-to-main run must always finish, because
   # it carries the packaging guard.
@@ -153,7 +159,7 @@ jobs:
         run: uv sync --locked --python "${{ steps.py.outputs.python-path }}"
 
       # The point of this job is the LEAN environment. If the heavy stack ever
-      # leaks into the unconditional dependencies, the 4 --ignore flags below
+      # leaks into the unconditional dependencies, the four --ignore flags below
       # would start hiding tests that could have run, and the extras split this
       # repo maintains would be silently broken.
       - name: Assert the lean env really is lean
@@ -184,17 +190,19 @@ jobs:
       - name: Clear stale setuptools build cache
         run: rm -rf build
 
-      # The exact invocation verified for the lean set (15 passed). --ignore, not
-      # explicit paths, so a NEW lean test file is picked up automatically; the
-      # inverse failure mode (a new heavy-import test file breaks this job) is the
-      # louder and better one. -rs makes any skip visible in the log; the JUnit
-      # report is what the next step makes decisions on.
-      - name: Run the lean subset (expects 15 passed)
+      # The invocation verified for the lean set (240 passed, 0 skipped, in a
+      # scratch lean venv built exactly like this job's: fresh `python3 -m venv`,
+      # non-editable `pip install` of this repo with NO extras, plus pytest).
+      # --ignore, not explicit paths, so a NEW lean test file is picked up
+      # automatically; the inverse failure mode (a new heavy-import test file
+      # breaks this job) is the louder and better one. -rs makes any skip visible
+      # in the log; the JUnit report is what the next step makes decisions on.
+      - name: Run the lean subset (240 tests today)
         run: |
           .venv/bin/python -m pytest \
             -p no:cacheprovider -rs \
             --ignore=tests/test_viz.py \
-            --ignore=tests/test_teleop.py \
+            --ignore=tests/test_teleop_retarget.py \
             --ignore=tests/test_right_config.py \
             --ignore=tests/test_udcap_retarget_chain.py \
             --junit-xml="${{ runner.temp }}/pytest-lean.xml"
@@ -205,11 +213,23 @@ jobs:
       # *some* three testcases in the file did (a file-level count alone is
       # satisfied by any three passing tests, including ones that were added
       # later and prove nothing about the wheel).
+      # --min-tests is a FLOOR, and 240 is the MEASURED total from the "invocation
+      # verified" run above -- not a guess and not padded with slack. A floor
+      # left below the real count is silently useless: it was once left at a
+      # stale, much lower value and a whole batch of test files could vanish
+      # from collection without this check ever going red. Whenever the lean
+      # subset gains or loses tests, re-measure and move this number to match;
+      # do not let it drift again. A whole file dropping out of collection
+      # still fails loudly regardless (pytest aborts the session on a
+      # collection error), and any skip fails here too, so the floor is not the
+      # only thing holding the gate up -- but it is the only thing that catches
+      # tests silently dropping out one file (or a few) at a time without
+      # aborting collection.
       - name: The packaging guard must have actually executed
         run: |
           .venv/bin/python .github/scripts/check_pytest_report.py \
             "${{ runner.temp }}/pytest-lean.xml" \
-            --min-tests 15 \
+            --min-tests 240 \
             --require tests/test_packaging.py=3 \
             --require tests/test_packaging.py::test_wheel_ships_curl_tuning_yaml_with_real_content \
             --require tests/test_packaging.py::test_resolve_tuning_returns_real_tuning_after_fresh_non_editable_install
@@ -268,19 +288,21 @@ jobs:
       - name: Clear stale setuptools build cache
         run: rm -rf build
 
-      - name: Run the whole suite (expects 50 passed)
+      - name: Run the whole suite (240 lean + 16 extras-only, 256 today)
         run: |
           .venv/bin/python -m pytest \
             -p no:cacheprovider -rs \
             --junit-xml="${{ runner.temp }}/pytest-full.xml"
 
       # See the lean job's identical step for why the two ::NAME pins are here
-      # alongside the file-level count.
+      # alongside the file-level count. --min-tests 256 is likewise a MEASURED
+      # total (this job's own venv, whole suite, no --ignore), not a guess --
+      # re-measure and raise it whenever the suite grows.
       - name: The packaging guard must have actually executed
         run: |
           .venv/bin/python .github/scripts/check_pytest_report.py \
             "${{ runner.temp }}/pytest-full.xml" \
-            --min-tests 50 \
+            --min-tests 256 \
             --require tests/test_packaging.py=3 \
             --require tests/test_packaging.py::test_wheel_ships_curl_tuning_yaml_with_real_content \
             --require tests/test_packaging.py::test_resolve_tuning_returns_real_tuning_after_fresh_non_editable_install
