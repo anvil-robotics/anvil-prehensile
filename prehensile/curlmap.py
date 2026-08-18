@@ -1,4 +1,6 @@
-"""Direct per-finger curl map: MediaPipe (21,3) keypoints -> 6 L6 angles (0-100).
+"""Direct per-finger curl map: MediaPipe (21,3) keypoints -> per-channel
+openness angles (0-100), one per channel of ``hand`` (``L6_HAND`` -- the L6's
+6 channels -- by default; see ``prehensile.hand.HandDescriptor``).
 
 Bypasses the dex_retargeting vector optimizer entirely for teleop. The L6 has
 only one flex DOF per finger + a thumb abduction DOF.
@@ -48,7 +50,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from prehensile.command import L6_OPEN, L6_SDK_ORDER
+from prehensile.command import L6_DRIVER_JOINTS, L6_OPEN, L6_SDK_ORDER
+from prehensile.hand import Channel, HandDescriptor, Output
 
 # Kinematic chains: wrist(0) -> mcp -> pip -> dip -> tip, one per flex channel.
 # Matches fk._TIP_INDICES tip order (thumb, index, middle, ring, pinky).
@@ -93,14 +96,16 @@ ABD_TUCK: float = -5.0
 
 _EPS = 1e-9
 _MID = L6_OPEN / 2.0  # pivot for the response-gain (amplify/soften around center)
-# Slot indices for the thumb<-index coupling, by name rather than by literal (the
-# rest of the module likewise never hardcodes a position).
-_I_THUMB_FLEX = L6_SDK_ORDER.index("thumb_flex")
-_I_INDEX = L6_SDK_ORDER.index("index")
-# Slot indices for the MRP (middle/ring/pinky) grasp group, by name -- same
-# never-hardcode-a-slot-position discipline as the pair above.
-_MRP_SLOTS = ("middle", "ring", "pinky")
-_I_MRP = tuple(L6_SDK_ORDER.index(s) for s in _MRP_SLOTS)
+# Channel indices for the thumb<-index pinch and the MRP grasp group used to be
+# module-level constants resolved off the literal L6_SDK_ORDER position. Now
+# that a hand's channel order/count/names are no longer fixed (see
+# ``prehensile.hand.HandDescriptor``), those indices are resolved PER INSTANCE
+# in ``CurlMapper.__init__`` instead (``self._i_pinch_driver``/
+# ``self._i_pinch_driven``/``self._i_group``) -- by ROLE, through
+# ``HandDescriptor.index_of_role``, rather than by name or position. The
+# never-hardcode-a-slot-position discipline is unchanged; only the lookup key
+# (role, not literal position) and the lifetime (per instance, not per module)
+# have moved.
 
 # Default static "home gesture" (a thumbs-up): the pose CurlMapper.home_gesture()
 # emits while the arms are still homing, before glove teleop takes over. Given in
@@ -112,6 +117,33 @@ HOME_GESTURE_OPENNESS: dict[str, float] = {
     "thumb_abd": 100.0,    # thumb spread away from the fingers
     "index": 0.0, "middle": 0.0, "ring": 0.0, "pinky": 0.0,   # fist
 }
+
+# The default hand: an IDENTITY role map off L6_SDK_ORDER (channel name == role
+# name), which is why nothing changes for a caller that never passes `hand=` --
+# every role literal elsewhere in this module resolves through
+# HandDescriptor.index_of_role to the exact integer L6_SDK_ORDER.index(...)
+# resolved to before this module had a HandDescriptor at all. Each channel's
+# `home` is sourced from HOME_GESTURE_OPENNESS above, so the shipped home-gesture
+# numbers do not change either.
+#
+# Built HERE rather than in prehensile.command (where L6_SDK_ORDER/
+# L6_DRIVER_JOINTS themselves live) because it needs HOME_GESTURE_OPENNESS,
+# which is a curl-map concept -- and prehensile.command must not import
+# prehensile.curlmap (curlmap already imports command), so building it on this
+# side is what avoids the cycle.
+L6_HAND: HandDescriptor = HandDescriptor(
+    name="realhand_l6",
+    channels=tuple(
+        Channel(name=slot, role=slot, home=HOME_GESTURE_OPENNESS[slot])
+        for slot in L6_SDK_ORDER
+    ),
+    # pinch/group are left at HandDescriptor's own defaults -- driver index,
+    # driven thumb_flex, group middle+ring+pinky -- which is exactly the
+    # shipped L6 wiring.
+    output=Output(units="percent", open=L6_OPEN, closed=0.0),
+    default_tuning="prehensile/configs/curl_tuning.yml",
+    driver_joints=dict(L6_DRIVER_JOINTS),
+)
 
 
 def _chain_length(kp: np.ndarray, chain: tuple[int, ...]) -> float:
@@ -186,7 +218,8 @@ def _thumb_abd_angle_deg(kp: np.ndarray) -> float:
 
 
 class CurlMapper:
-    """Stateful (21,3) MediaPipe keypoints -> 6 L6 angles [0,100], EMA-smoothed.
+    """Stateful (21,3) MediaPipe keypoints -> per-channel L6-openness angles
+    [0,100], EMA-smoothed, in the ORDER of ``hand`` (``L6_HAND`` by default).
 
     ``side`` selects the hand. The curl/bend/spread metrics themselves are
     side-independent, and ``side`` no longer flips the thumb by itself -- it is
@@ -194,6 +227,18 @@ class CurlMapper:
     be mounted/oriented either way on both hands) is flipped via the tuning
     ``flip`` key instead (see the per-side ``left``/``right`` sections in
     configs/curl_tuning.yml).
+
+    ``hand`` is an optional ``prehensile.hand.HandDescriptor`` (keyword-only,
+    defaults to ``L6_HAND`` -- an identity role map off ``L6_SDK_ORDER``, so
+    every existing caller that never passes it is unaffected byte-for-byte).
+    It is what lets this class drive a hand whose channel names, order, and
+    count differ from the L6's: every place below that used to say "the
+    thumb_flex slot" or "L6_SDK_ORDER position N" now means "whichever channel
+    this hand's descriptor gives that ROLE" (see ``prehensile.hand``'s module
+    docstring for what a role is and why an unmapped channel cannot exist).
+    The six metrics this class computes from a keypoint frame are themselves
+    always the same six roles, on every hand; only which output channel
+    receives each one -- and that hand's grasp-group/pinch wiring -- changes.
 
     ``r_open``/``r_closed`` are ``{finger: float}`` dicts over the four chord
     fingers ``{"index","middle","ring","pinky"}`` (default: module ``R_OPEN``/
@@ -288,8 +333,8 @@ class CurlMapper:
       real thumb underneath and unlocking resumes without a jump).
 
       ``self.parked_channels`` is a read-only ``tuple[str, ...]`` property
-      listing the ``L6_SDK_ORDER`` slot names that currently have a non-
-      ``None`` parked value (``()`` if nothing is parked), in ``L6_SDK_ORDER``
+      listing this hand's channel names that currently have a non-``None``
+      parked value (``()`` if nothing is parked), in the hand's own channel
       order. It is computed live from the parked-value table, so it reflects
       ``tuning``-seeded parks as well as any live ``set_park`` calls,
       including clearing a slot back out with ``set_park(slot, None)``.
@@ -371,7 +416,36 @@ class CurlMapper:
         thumb_flex_pivot: float | None = None,
         tuning: dict[str, dict[str, float | bool]] | None = None,
         couple_thumb_index: bool = True,
+        *,
+        hand: HandDescriptor | None = None,
     ) -> None:
+        # The hand descriptor this mapper drives. Defaults to L6_HAND (an
+        # identity role map off L6_SDK_ORDER), so every existing caller that
+        # never passes `hand=` -- in particular hand_teleop_node's fixed
+        # 5-kwarg construction -- is unaffected. `hand` is keyword-only and
+        # last, per the same discipline as every other constructor addition
+        # here: existing positional callers cannot be broken by it.
+        self.hand: HandDescriptor = L6_HAND if hand is None else hand
+        _order = self.hand.order
+        _roles = self.hand.roles
+        # Grasp-group channel indices, resolved by ROLE (not by name/position)
+        # through the descriptor -- collects EVERY channel whose role is in
+        # self.hand.group, so a role claimed by more than one channel puts all
+        # of them in the group (see prehensile.hand's module docstring).
+        self._i_group: tuple[int, ...] = tuple(
+            i for i, r in enumerate(_roles) if r in self.hand.group
+        )
+        _pinch = self.hand.pinch
+        # Pinch driver/driven channel indices, resolved by role; None on a hand
+        # with no pinch configured (or, defensively, one whose pinch role
+        # somehow resolves to nothing -- HandDescriptor.__post_init__ already
+        # guarantees this cannot happen for a validated descriptor).
+        self._i_pinch_driver: int | None = (
+            None if _pinch is None else self.hand.index_of_role(_pinch.driver)
+        )
+        self._i_pinch_driven: int | None = (
+            None if _pinch is None else self.hand.index_of_role(_pinch.driven)
+        )
         self.side = side
         self.alpha = alpha
         self.r_open = dict(R_OPEN if r_open is None else r_open)
@@ -393,15 +467,15 @@ class CurlMapper:
         # every other channel pivots at the 50 midpoint. Raising it (e.g. 70)
         # pushes sub-pivot (curled) values lower for a given flex_gain.
         self.thumb_flex_pivot = _MID if thumb_flex_pivot is None else float(thumb_flex_pivot)
-        # Per-slot response gain, EMA alpha and gain pivot, aligned to
-        # L6_SDK_ORDER (thumb_abd gets its own gain; thumb_flex its own pivot;
-        # every channel starts at the fallback `alpha`, overridable per-channel
-        # below via tuning's "alpha" key).
-        self._gains = [self.abd_gain if slot == "thumb_abd" else self.flex_gain
-                       for slot in L6_SDK_ORDER]
-        self._alphas = [self.alpha for slot in L6_SDK_ORDER]
-        self._pivots = [self.thumb_flex_pivot if slot == "thumb_flex" else _MID
-                        for slot in L6_SDK_ORDER]
+        # Per-channel response gain, EMA alpha and gain pivot, aligned to this
+        # hand's own channel order (thumb_abd ROLE gets its own gain; thumb_flex
+        # ROLE its own pivot; every channel starts at the fallback `alpha`,
+        # overridable per-channel below via tuning's "alpha" key).
+        self._gains = [self.abd_gain if role == "thumb_abd" else self.flex_gain
+                       for role in _roles]
+        self._alphas = [self.alpha for _ in _roles]
+        self._pivots = [self.thumb_flex_pivot if role == "thumb_flex" else _MID
+                        for role in _roles]
         # Per-channel gain/pivot/flip overrides (e.g. from configs/curl_tuning.yml
         # via prehensile.tuning); gain/pivot take precedence over the
         # scalar-derived values above. A truthy "flip" for a channel marks its
@@ -409,10 +483,10 @@ class CurlMapper:
         # on one hand); this is the ONLY source of flips -- ``side`` itself no
         # longer implies one.
         self._flip_slots: list[int] = []
-        # Per-slot parked value (native 0-100 convention), forced onto the
+        # Per-channel parked value (native 0-100 convention), forced onto the
         # channel -- bypassing gain/pivot -- while self.locked is True. None
-        # means that slot has no park set (see set_park() to set/clear live).
-        self._parks: list[float | None] = [None] * len(L6_SDK_ORDER)
+        # means that channel has no park set (see set_park() to set/clear live).
+        self._parks: list[float | None] = [None] * len(_order)
         # Lower bound of the thumb<-index coupling, in physical-openness terms.
         # 0.0 (the default when unset, incl. tuning=None from --no-tune or a
         # missing config) lets the thumb follow the index all the way closed.
@@ -422,14 +496,25 @@ class CurlMapper:
         # value so both saturate together. 0.0 (default) means no clamp.
         self._couple_index_low: float = 0.0
         # Static home-gesture pose, in PHYSICAL-openness terms (see
-        # HOME_GESTURE_OPENNESS / home_gesture()), aligned to L6_SDK_ORDER.
-        # Defaults to the module constant; a tuning "home_gesture" entry below
-        # overrides individual channels.
+        # prehensile.hand.Channel.home / home_gesture()), aligned to this
+        # hand's own channel order. Sourced from the descriptor's per-channel
+        # `home` (for L6_HAND, HOME_GESTURE_OPENNESS's values verbatim -- see
+        # L6_HAND above); clamped like every other physical-openness value
+        # ingested here. A tuning "home_gesture" entry below overrides
+        # individual channels.
         self._home_gesture_pre: list[float] = [
-            HOME_GESTURE_OPENNESS[slot] for slot in L6_SDK_ORDER
+            float(np.clip(c.home, 0.0, L6_OPEN)) for c in self.hand.channels
         ]
+        # The pinch's driver/driven ROLES (not channel names), used below to
+        # match a tuning "couple_low" entry to the right side of the coupling
+        # regardless of what this hand happens to call its index/thumb
+        # channels. None on a hand with no pinch configured, in which case a
+        # "couple_low" entry (on any channel) is simply never claimed here --
+        # matching couple_thumb_index/self._i_pinch_driven being inert too.
+        _pinch_driven_role = None if _pinch is None else _pinch.driven
+        _pinch_driver_role = None if _pinch is None else _pinch.driver
         if tuning:
-            for i, slot in enumerate(L6_SDK_ORDER):
+            for i, (slot, role) in enumerate(zip(_order, _roles)):
                 ch = tuning.get(slot) or {}
                 if "gain" in ch:
                     self._gains[i] = float(ch["gain"])
@@ -442,16 +527,17 @@ class CurlMapper:
                 if "park" in ch:
                     self._parks[i] = float(ch["park"])
                 # couple_low means different things on the coupling's two
-                # channels; prehensile.tuning rejects it anywhere else, but a
-                # caller can hand us a raw dict, so match on the slot explicitly.
+                # roles; prehensile.tuning rejects it anywhere else, but a
+                # caller can hand us a raw dict, so match on the ROLE (this
+                # hand's own pinch wiring), not a hardcoded channel name.
                 if "couple_low" in ch:
                     # Clamped on the way in: an out-of-range floor would otherwise
                     # distort the window normalization in __call__, not just the
                     # output value.
                     cl = float(np.clip(float(ch["couple_low"]), 0.0, L6_OPEN))
-                    if slot == "thumb_flex":
+                    if role == _pinch_driven_role:
                         self._couple_low = cl
-                    elif slot == "index":
+                    elif role == _pinch_driver_role:
                         self._couple_index_low = cl
                 if "home_gesture" in ch:
                     # Clamped on the way in, like couple_low above -- an
@@ -470,8 +556,8 @@ class CurlMapper:
         self.last_unparked: list[float] | None = None
 
     def set_park(self, slot: str, value: float | None) -> None:
-        """Set (or clear, with None) the parked value for one L6 slot, applied when self.locked."""
-        self._parks[L6_SDK_ORDER.index(slot)] = None if value is None else float(value)
+        """Set (or clear, with None) the parked value for one channel, applied when self.locked."""
+        self._parks[self.hand.order.index(slot)] = None if value is None else float(value)
 
     @property
     def couple_index_floor(self) -> float | None:
@@ -482,18 +568,19 @@ class CurlMapper:
 
     @property
     def parked_channels(self) -> tuple[str, ...]:
-        """L6_SDK_ORDER slot names that currently have a non-None parked value,
-        in L6_SDK_ORDER order (``()`` if nothing is parked).
+        """This hand's channel names that currently have a non-None parked
+        value, in the hand's own channel order (``()`` if nothing is parked).
 
         Computed live off ``self._parks`` on every access, so it always
         reflects the current state -- whether seeded from ``tuning`` at
         construction or changed since via ``set_park`` (including clearing a
         slot with ``set_park(slot, None)``)."""
-        return tuple(slot for slot, pv in zip(L6_SDK_ORDER, self._parks) if pv is not None)
+        return tuple(slot for slot, pv in zip(self.hand.order, self._parks) if pv is not None)
 
     def home_gesture(self) -> list[float]:
-        """The static home-gesture pose as a per-hand SDK command: 6 floats in
-        L6_SDK_ORDER order, ready to send straight to this hand's ``set_angles``.
+        """The static home-gesture pose as a per-hand SDK command: one float per
+        channel, in this hand's own channel order, ready to send straight to
+        this hand's ``set_angles``.
 
         Default ``HOME_GESTURE_OPENNESS`` (a thumbs-up), overridable per-channel
         via ``tuning``'s ``home_gesture`` key -- see ``self._home_gesture_pre``,
@@ -551,8 +638,8 @@ class CurlMapper:
         # but thumb_flex, which may use thumb_flex_pivot); flex_gain / abd_gain
         # both 1.0 == no change. Then clip to [0,100].
         new = [
-            float(np.clip(p + (raw[slot] - p) * g, 0.0, L6_OPEN))
-            for slot, g, p in zip(L6_SDK_ORDER, self._gains, self._pivots)
+            float(np.clip(p + (raw[role] - p) * g, 0.0, L6_OPEN))
+            for role, g, p in zip(self.hand.roles, self._gains, self._pivots)
         ]
 
         if self._last is None:
@@ -588,7 +675,7 @@ class CurlMapper:
                 if pv is not None:
                     out[i] = float(np.clip(pv, 0.0, L6_OPEN))
 
-            if self.couple_thumb_index:
+            if self.couple_thumb_index and self._i_pinch_driven is not None:
                 # thumb_flex stops using its own metric and follows the index
                 # linearly, rescaled onto [couple_low, 100]: index fully open ->
                 # thumb fully open, index fully closed -> thumb at couple_low.
@@ -606,7 +693,13 @@ class CurlMapper:
                 # after the last_unparked snapshot, so a UI can still show the
                 # operator's real thumb; and after the EMA, so thumb_flex's filter
                 # keeps tracking underneath and unlocking resumes without a jump.
-                idx = pre[_I_INDEX]
+                #
+                # i_drv/i_dvn are this hand's pinch driver/driven channel
+                # indices (resolved by role in __init__), NOT hardcoded
+                # positions -- a hand whose pinch is wired to different roles
+                # (or different channel names/order) is driven identically.
+                i_drv, i_dvn = self._i_pinch_driver, self._i_pinch_driven
+                idx = pre[i_drv]
                 index_low = self._couple_index_low
                 if index_low > 0.0:
                     # Floor the DRIVING finger too: it stops short of fully closed.
@@ -614,7 +707,7 @@ class CurlMapper:
                     # clamped here in `pre` space and then converted into this hand's
                     # SDK space -- same reasoning as the coupled thumb below.
                     idx = max(index_low, idx)
-                    out[_I_INDEX] = L6_OPEN - idx if _I_INDEX in self._flip_slots else idx
+                    out[i_drv] = L6_OPEN - idx if i_drv in self._flip_slots else idx
                 # Normalize the index within its WORKING window [index_low, 100]
                 # rather than the raw [0, 100]. Without this the floor would eat
                 # into the thumb's travel too -- the thumb would bottom out at
@@ -629,34 +722,42 @@ class CurlMapper:
                 u = 1.0 if span <= _EPS else float(np.clip((idx - index_low) / span, 0.0, 1.0))
                 low = self._couple_low
                 v = float(np.clip(low + u * (L6_OPEN - low), 0.0, L6_OPEN))
-                out[_I_THUMB_FLEX] = (
-                    L6_OPEN - v if _I_THUMB_FLEX in self._flip_slots else v
-                )
+                out[i_dvn] = L6_OPEN - v if i_dvn in self._flip_slots else v
 
-            # MRP group: middle/ring/pinky move as ONE group, each commanded the
-            # MEDIAN of the three fingers' tracked (physical-openness) values.
+            # Grasp group (default middle/ring/pinky on L6; a hand's own
+            # self.hand.group role list on any other hand): every channel whose
+            # role is in the group moves as ONE group, each commanded the
+            # MEDIAN of the group's tracked (physical-openness) values.
             # Unconditional -- part of what the grasp lock means, exactly like
             # the thumb pinch above, not a separate opt-in flag. See the class
-            # docstring's "MRP group" section for why median (not mean/min/max).
+            # docstring's "MRP group" section for why median (not mean/min/max);
+            # that safety property (the median of N values always lies within
+            # [min, max] of those values) holds for any N, including a role
+            # claimed by more than one channel.
             #
             # Like the coupled thumb, this is a TRACKED quantity, not a literal
             # SDK target -- computed from `pre` (physical openness, pre-flip)
             # and written out through EACH channel's OWN flip (not one shared
-            # flip), so a mirrored MRP channel would still close as the others
-            # close. (No MRP channel is flipped in the shipped config, so this
-            # is a no-op today; implemented correctly anyway.) It reads only
-            # `pre`, which nothing mutates, and its channel set is disjoint from
-            # the thumb block's above, so the two are independent and the
-            # ordering between them is cosmetic -- appending here keeps the
-            # hardware-validated thumb block's diff untouched. It is applied
-            # after the park loop (narrower opt-in wins, so a park on an MRP
-            # channel is overwritten -- unreachable in the shipped config, but
-            # implemented the same way for consistency), after the
-            # last_unparked snapshot (so a UI can still show the operator's
-            # real fingers underneath the group), and after the EMA (so each
-            # channel's filter keeps tracking the real finger underneath and
-            # unlocking resumes without a jump).
-            group = float(np.median([pre[i] for i in _I_MRP]))
-            for i in _I_MRP:
-                out[i] = L6_OPEN - group if i in self._flip_slots else group
+            # flip), so a mirrored group channel would still close as the others
+            # close. (No group channel is flipped in the shipped L6 config, so
+            # this is a no-op there today; implemented correctly anyway.) It
+            # reads only `pre`, which nothing mutates, and (for the shipped L6
+            # config) its channel set is disjoint from the thumb block's above,
+            # so the two are independent there and the ordering between them is
+            # cosmetic -- appending here keeps the hardware-validated thumb
+            # block's diff untouched. It is applied after the park loop
+            # (narrower opt-in wins, so a park on a group channel is overwritten
+            # -- unreachable in the shipped config, but implemented the same way
+            # for consistency), after the last_unparked snapshot (so a UI can
+            # still show the operator's real fingers underneath the group), and
+            # after the EMA (so each channel's filter keeps tracking the real
+            # finger underneath and unlocking resumes without a jump).
+            #
+            # Guarded (not just an empty-loop no-op): np.median([]) is nan (and
+            # emits a RuntimeWarning) BEFORE the write loop below would skip, so
+            # a hand with an empty grasp group must not reach the median call.
+            if self._i_group:
+                group = float(np.median([pre[i] for i in self._i_group]))
+                for i in self._i_group:
+                    out[i] = L6_OPEN - group if i in self._flip_slots else group
         return out

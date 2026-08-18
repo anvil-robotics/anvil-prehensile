@@ -72,12 +72,25 @@ def _listener(mapper: CurlMapper, channel: str, state: dict, step: float,
         print(f"   {channel} park = {cur:g}")
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """The CLI parser, split out of ``main()`` (mirroring ``prehensile.teleop``'s
+    ``_build_parser()``) so tests can assert flag defaults/validation without
+    touching hardware.
+
+    ``--channel`` deliberately does NOT use argparse's own ``choices=``: a
+    ``choices=`` list has to be fixed at PARSER-BUILD time (i.e. at import/call
+    time, before any argument has even been read), which is exactly the wrong
+    moment for a hand-descriptor-driven tool -- a future version of this tool
+    that accepts a ``--hand`` descriptor could not build its parser before
+    knowing which descriptor to validate against. ``_parse_args`` below
+    validates the channel AFTER parsing instead, against this (currently
+    L6-only) tool's own channel list, with its own message.
+    """
     ap = argparse.ArgumentParser(
         description="Find the LEFT L6 thumb park value by grasping a real object (MOVES HARDWARE)")
     ap.add_argument("--speed", type=float, default=25.0,
                     help="motor speed 0-100 (default 25; motors won't move at 0)")
-    ap.add_argument("--channel", default="thumb_abd", choices=L6_SDK_ORDER,
+    ap.add_argument("--channel", default="thumb_abd",
                     help="which L6 channel to park (default: thumb_abd, the opposition/spread axis)")
     ap.add_argument("--interface", default="hand_l",
                     help="L6 SocketCAN interface for the left hand (default: hand_l)")
@@ -85,7 +98,25 @@ def main() -> int:
     ap.add_argument("--start", type=float, default=15.0, help="initial park value for --channel")
     ap.add_argument("--step", type=float, default=5.0, help="+/- nudge size")
     ap.add_argument("--fps", type=float, default=60.0)
-    args = ap.parse_args()
+    return ap
+
+
+def _parse_args(argv=None) -> argparse.Namespace:
+    """Parse ``argv`` and validate ``--channel`` POST-parse (see
+    ``_build_parser``'s docstring), exiting like argparse's own ``choices=``
+    would (usage + a message on stderr, exit code 2) on an invalid channel."""
+    ap = _build_parser()
+    args = ap.parse_args(argv)
+    if args.channel not in L6_SDK_ORDER:
+        ap.error(
+            f"argument --channel: invalid choice: {args.channel!r} "
+            f"(choose from {', '.join(sorted(L6_SDK_ORDER))})"
+        )
+    return args
+
+
+def main() -> int:
+    args = _parse_args()
 
     # realhand/CAN imported here (lazily, like teleop.py) so --help works
     # without the SDK/bus present.
