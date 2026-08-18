@@ -19,9 +19,6 @@ wheels/
 # Virtual environment -- 5.3 GB in the source tree. Rebuild with `uv sync`.
 .venv/
 
-# Test suite -- local-only, not part of the published repo.
-tests/
-
 # Recorder output. tools/record_thumb_sweep.py writes
 # recordings/thumb_sweep_<glove>_<side>_<HHMMSS>.{csv,npz} and mkdir()s the
 # directory on demand, so this needs no .gitkeep either.
