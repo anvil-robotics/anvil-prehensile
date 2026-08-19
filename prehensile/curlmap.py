@@ -140,7 +140,13 @@ L6_HAND: HandDescriptor = HandDescriptor(
     # pinch/group are left at HandDescriptor's own defaults -- driver index,
     # driven thumb_flex, group middle+ring+pinky -- which is exactly the
     # shipped L6 wiring.
-    output=Output(units="percent", open=L6_OPEN, closed=0.0),
+    # `driver` is a "module:attr" STRING, resolved only when a driver is
+    # actually built (prehensile.hand_driver.build_driver). Naming it here
+    # keeps the shipped descriptor complete -- a contributor's own descriptor
+    # names theirs the same way -- without curlmap.py ever importing the
+    # driver, and so without ever pulling in realhand/CAN.
+    output=Output(units="percent", open=L6_OPEN, closed=0.0,
+                  driver="prehensile.hand_driver:L6Driver"),
     default_tuning="prehensile/configs/curl_tuning.yml",
     driver_joints=dict(L6_DRIVER_JOINTS),
 )

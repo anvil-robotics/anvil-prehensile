@@ -7,10 +7,15 @@ job, the pull-request gate, actually run these tests. The three teleop tests
 that do need a real L6Retargeter live in tests/test_teleop_retarget.py; keep
 this file's import list clean of the heavy stack. The --live L6 path, its 3-2-1
 countdown, and the CAN error handling are deferred to hardware acceptance with
-the user (`uv run python -m prehensile.teleop --live`).
+the user (`uv run python -m prehensile.teleop --live`); the dry-run path
+(everything above, `loop()` included) is exactly what this file's other tests
+already exercise, unchanged by Phase 4b -- the HandDriver/L6Driver contract
+itself is tested in tests/test_hand_driver.py, fake-driver only.
 """
 
 import itertools
+import subprocess
+import sys
 
 import pytest
 from prehensile import fk
@@ -406,5 +411,28 @@ def test_loop_coupled_channel_is_not_reported_as_parked(capsys):
     out = capsys.readouterr().out
     assert "COUPLED thumb_flex<-index" in out
     assert "PARKED thumb_flex" not in out
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4b: the dry-run path must never reach for the HandDriver machinery.
+# `from prehensile.hand_driver import ...` sits inside main()'s `if args.live:`
+# branch, textually after the dry-run branch's own `return 0` (see main()) --
+# run in a subprocess (mirrors tests/test_l6_discovery.py's identical
+# rationale): another test module in this session may already have imported
+# prehensile.hand_driver or realhand, which would make an in-process
+# sys.modules check pass or fail depending on test order rather than on
+# teleop.py's own behaviour.
+# --------------------------------------------------------------------------- #
+def test_importing_teleop_does_not_import_hand_driver_or_realhand():
+    code = (
+        "import sys\n"
+        "import prehensile.teleop\n"
+        "assert 'prehensile.hand_driver' not in sys.modules, sorted(sys.modules)\n"
+        "assert 'realhand' not in sys.modules, sorted(sys.modules)\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "OK"
 
 

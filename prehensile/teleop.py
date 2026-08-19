@@ -275,10 +275,10 @@ def main():
                 print("\nstopped.")
                 return 0
 
-            # realhand/CAN imported only here so dry-run (and the tests) never need them.
-            import can
-            from realhand import L6
-            from realhand.exceptions import CANError
+            # HandDriver (and, inside it, realhand/CAN) imported only here so
+            # dry-run (and the tests) never need them -- see
+            # prehensile/hand_driver.py's module docstring.
+            from prehensile.hand_driver import HandOutputError, L6Driver
 
             print("SAFETY: the L6 will move. Clear the area. Starting in", end=" ", flush=True)
             for n in (3, 2, 1):
@@ -286,15 +286,15 @@ def main():
                 time.sleep(1.0)
             print("go!\n")
             try:
-                with L6(side=hand.side, interface_name=interface) as l6hand:
-                    l6hand.speed.set_speeds([args.speed] * 6)  # motors won't move at speed 0
+                with L6Driver(side=hand.side, interface_name=interface) as driver:
+                    driver.set_speed(args.speed)  # motors won't move at speed 0
                     time.sleep(0.2)
                     with contextlib.suppress(KeyboardInterrupt):
                         loop(src, retargeter, index_map,
-                             sink=lambda a: l6hand.angle.set_angles(a), fps=args.fps,
+                             sink=driver.send, fps=args.fps,
                              invert_flex=glove.invert_flex, mapper=mapper)
                     print("\nstopped (hand holds its last commanded pose).")
-            except (CANError, can.CanError, OSError) as exc:
+            except HandOutputError as exc:
                 print(f"\nCAN/L6 error: {exc}")
                 print(f"Check the L6 is powered and {interface} is up: "
                       f"ip -details link show {interface}")
