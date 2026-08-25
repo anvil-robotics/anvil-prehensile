@@ -131,29 +131,28 @@ header comments.
 
 ### Pipeline
 
-```
-    Wuji glove              UDCap glove
-     wuji.py                  udcap.py
-        |                        |
-        +------------+-----------+
-                     v
-        (21,3) MediaPipe keypoints        shared seam
-            wrist-local, meters
-                     |
-        +------------+-----------+
-        v                        v
-   --map curl               --map retarget
-    curlmap.py               retarget.py
-    geometric                optimizer -> qpos -> command.py
-        |                        |
-        +------------+-----------+
-                     v
-            6 x [0,100] angles
-                     |
-        +------------+-----------+
-        v                        v
-   teleop --live              viz
-   realhand -> CAN            MuJoCo, no hardware
+```mermaid
+flowchart LR
+    W(["Wuji glove<br/>wuji.py"])
+    U(["UDCap glove<br/>udcap.py"])
+    KP["shared seam<br/>(21,3) MediaPipe<br/>keypoints<br/>wrist-local, meters"]
+    C["--map curl (default)<br/>curlmap.py<br/>geometric"]
+    R["--map retarget<br/>retarget.py<br/>optimizer → qpos<br/>→ command.py"]
+    A["6 angles<br/>0–100 each"]
+    T(["teleop --live<br/>realhand → CAN"])
+    V(["viz<br/>MuJoCo, no hardware"])
+
+    W --> KP
+    U --> KP
+    KP --> C
+    KP --> R
+    C --> A
+    R --> A
+    A --> T
+    A --> V
+
+    classDef seam stroke-width:3px
+    class KP seam
 ```
 
 The curl + UDCap path also runs in the workcell as the ROS `hand_teleop_node`,
