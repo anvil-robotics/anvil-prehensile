@@ -5,6 +5,27 @@ An end-to-end teleoperation stack for dexterous manipulation, bridging the
 to the same `(21, 3)` MediaPipe-order keypoint frame; everything downstream of
 that seam shares one code path.
 
+Below are some demo videos that Anvil-Prehensile integrated with our OpenArm
+system:
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/img/IMG_1197.gif" width="100%" alt=""></td>
+    <td width="33%"><img src="docs/img/IMG_1199.gif" width="100%" alt=""></td>
+    <td width="33%"><img src="docs/img/IMG_1205.gif" width="100%" alt=""></td>
+  </tr>
+  <tr align="center">
+    <td><b>Logistic packing</b></td>
+    <td><b>Cube inserting</b></td>
+    <td><b>Lego stacking</b></td>
+  </tr>
+  <tr align="center">
+    <td>Open the deliver box, put items inside, then close it. </td>
+    <td>Insert one cube into the other.</td>
+    <td>Stack lego on top of each other. </td>
+  </tr>
+</table>
+
 ## Install packages & offline check
 
 ```bash
