@@ -5,8 +5,22 @@ An end-to-end teleoperation stack for dexterous manipulation, bridging the
 to the same `(21, 3)` MediaPipe-order keypoint frame; everything downstream of
 that seam shares one code path.
 
-Below are some demo videos that Anvil-Prehensile integrated with our OpenArm
-system:
+Below are some demos of Anvil-Prehensile.
+
+Driving the REALHAND L6 from each supported glove:
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/udcap_glove_demo.gif" width="100%" alt=""></td>
+    <td width="50%"><img src="docs/img/wuji_glove_demo.gif" width="100%" alt=""></td>
+  </tr>
+  <tr align="center">
+    <td><b>UDCap glove demo</b></td>
+    <td><b>Wuji glove demo</b></td>
+  </tr>
+</table>
+
+Anvil-Prehensile integrated with our OpenArm system:
 
 <table>
   <tr>
