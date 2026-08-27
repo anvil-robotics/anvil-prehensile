@@ -29,14 +29,14 @@ Anvil-Prehensile integrated with our OpenArm system:
     <td width="33%"><img src="docs/img/IMG_1205.gif" width="100%" alt=""></td>
   </tr>
   <tr align="center">
-    <td><b>Logistic packing</b></td>
+    <td><b>Logistics packing</b></td>
     <td><b>Cube inserting</b></td>
     <td><b>Lego stacking</b></td>
   </tr>
   <tr align="center">
-    <td>Open the deliver box, put items inside, then close it. </td>
+    <td>Open the delivery box, put items inside, then close it.</td>
     <td>Insert one cube into the other.</td>
-    <td>Stack lego on top of each other. </td>
+    <td>Stack Lego bricks on top of each other.</td>
   </tr>
 </table>
 
@@ -51,10 +51,6 @@ If `offline_check` fails, the environment is broken — stop there, it is not th
 glove.
 
 ## Bring-up
-
-Before running the prehensile teleoperation commands, follow the instructions
-and links below to start the glove and hand hardware.
-
 ### 1 · Glove — pick one
 
 #### **UDCap Data Glove**
@@ -67,40 +63,55 @@ FPS **120**, Target `127.0.0.1:5555`:
 
 ![HandDriver data transmission settings](docs/img/udcap-data-transmission.png)
 
+After following the UDCap guide and **seeing the hands move in HandDriver**,
+run the command below to check that the glove is connected to the computer.
+```bash
+uv run python tools/probe_udp.py
+```
+
 #### **Wuji Glove**
 
-Calibrate the glove first in **Wuji Studio**
-([calibration guide](https://docs.wuji.tech/docs/en/wuji-studio/latest/calibration/),
-[install](https://docs.wuji.tech/docs/en/wuji-studio/latest/installation/)).
-Create a **named profile** before you calibrate — the built-in `Default` profile
-does not persist results, so calibrating under it silently changes nothing and
-the SDK keeps falling back to a generic hand URDF.
-
-Note: close Wuji Studio before running prehensile teleop — only one session may
-talk to the glove at a time.
+Install **Wuji Studio** and calibrate the glove
+([install](https://docs.wuji.tech/docs/en/wuji-studio/latest/installation/), [calibration guide](https://docs.wuji.tech/docs/en/wuji-studio/latest/calibration/)).
+After calibrating, **make sure the hands move on the Wuji Studio visualization
+page**, then run the command below to check that the glove is connected to the
+computer.
+```bash
+uv run python tools/probe_wuji.py
+```
+Note: **Close Wuji Studio before running prehensile teleop** — only one session may talk to the glove at a time.
 
 ### 2 · Hand (REALHAND L6)
 
-Plug the USB adapter into the computer, then run the script below to set up the
-udev rule:
+Plug the USB adapter into the computer, then run the script below to set up the udev rule:
 
 ```bash
-sudo python3 tools/bring_up_hand.py
+sudo python3 tools/bring_up_hand.py   # Re-run this after every replug.
 ```
 
 Every tool here defaults to a canonical interface name (`hand_l`/`hand_r`)
 rather than probing, and udev gives hand adapters no name — so those names exist
 only after this runs, and not across a reboot or replug.
 
-## Commands
+### 3 · Anvil-Prehensile commands
 
-| command | purpose | hand move? |
-| ------- | ------- | :-: |
-| `uv run python -m prehensile.offline_check` | synthetic smoke test. No flags, left hand hardcoded. | no |
-| `uv run python tools/probe_udp.py --seconds 2` | check the UDCap stream: expect ~120 pkt/s and a `verdict:` naming `TeleopDataQuat` or `JSON`. | no |
-| `uv run python -m prehensile.teleop` | glove → angles, printed. No CAN is opened; `realhand` is never imported. | no |
-| `uv run python -m prehensile.viz` | MuJoCo preview with keypoints overlaid. Needs a display. | no |
-| `uv run python -m prehensile.teleop --live --speed 25` | drives the L6 | $\color{red}{\textsf{yes}}$ |
+After choosing the glove and hand and making sure they are connected to the
+computer, use the basic Anvil-Prehensile commands below. They fall into two
+groups, viz (MuJoCo preview) and teleop:
+
+```bash
+# viz
+uv run python -m prehensile.viz --hand right --glove wuji --map curl # Open a MuJoCo preview showing the 21 keypoints and the L6 URDF
+```
+The command above uses the right hand, the Wuji glove, and curl mapping. Use
+`-h` to see more flags.
+```bash
+# teleop
+uv run python -m prehensile.teleop --hand left --glove udcap --map retarget --speed 25 # Only prints the joint angles in the terminal; the hand does NOT move.
+uv run python -m prehensile.teleop --hand left --glove udcap --map retarget --speed 25 --live # Adding --live MOVES THE HAND!
+```
+The commands above use the left hand, the UDCap glove, a speed of 25, and
+retarget mapping. Use `-h` to see more flags.
 
 ### Special setting for UDCap
 
@@ -111,27 +122,6 @@ named in the trailing bracket:
 ```
 thumb_flex=100.0  thumb_abd= 47.1  index= 12.0  middle= 88.4 ...  [PARKED thumb_abd  COUPLED thumb_flex<-index  FLOOR index=20]
 ```
-
-## Flags
-
-`T` = `teleop`, `V` = `viz`. Shared by both:
-
-| flag | T | V | default | what it does | hand move? |
-| ---- | :-: | :-: | ------- | ------------ | :-: |
-| `--glove {udcap,wuji}` | ● | ● | `udcap` | glove source | no |
-| `--hand {left,right}` | ● | ● | `left` | URDF, retarget config, L6 side, default interface | no |
-| `--map {curl,retarget}` | ● | ● | `curl` | direct curl map, or the optimizer | no |
-| `--fps N` | ● | ● | `60.0` | loop rate (console readout is throttled to ~12 Hz separately) | no |
-| `--port N` | ● | ● | `5555` | UDP port; ignored for Wuji | no |
-
-Specific to one command:
-
-| flag | T | V | default | what it does | hand move? |
-| ---- | :-: | :-: | ------- | ------------ | :-: |
-| `--live` | ● | | off | open the L6 and send the angles | $\color{red}{\textsf{yes}}$ |
-| `--interface IFACE` | ● | | from `--hand` (`hand_l`/`hand_r`) | which physical hand receives commands | $\color{red}{\textsf{yes}}$ |
-| `--speed N` | ● | | `40.0` | motor speed 0–100, set once at startup. Motors do not move at 0. | $\color{red}{\textsf{yes}}$ |
-| `--no-keypoints` | | ● | off | hide the keypoint overlay | no |
 
 ## Tuning
 

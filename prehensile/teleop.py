@@ -191,21 +191,36 @@ def loop(source, retargeter, index_map, sink, fps, invert_flex=True, mapper=None
 def _build_parser() -> argparse.ArgumentParser:
     """The CLI parser, split out of ``main()`` so the tests can assert flag defaults
     without building a retargeter or touching hardware."""
-    ap = argparse.ArgumentParser(description="glove -> REALHAND L6 teleop")
+    ap = argparse.ArgumentParser(
+        prog="python -m prehensile.teleop",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Glove -> REALHAND L6 teleoperation.\n"
+            "Reads the selected glove, normalizes each frame to (21,3) MediaPipe-order\n"
+            "keypoints, maps those to the L6's six angles (0-100), and either prints\n"
+            "them (the default) or sends them to the hand over CAN (--live)."
+        )
+    )
     ap.add_argument("--live", action="store_true",
-                    help="open the L6 and send commands (fingers move). Default: dry-run print only.")
+                    help="open the L6 and send the angles -- THE FINGERS MOVE. A 3-2-1 "
+                         "countdown runs first. Default: dry-run, print only.")
     ap.add_argument("--glove", choices=sorted(GLOVES), default="udcap",
                     help="glove source to read from (default: udcap)")
     ap.add_argument("--hand", choices=sorted(HANDS), default="left",
-                    help="which hand to retarget/drive (default: left)")
-    ap.add_argument("--interface", default=None,
-                    help="L6 SocketCAN interface (live only); default is the hand's own iface")
-    ap.add_argument("--speed", type=float, default=40.0, help="L6 motor speed 0-100 (live only)")
-    ap.add_argument("--fps", type=float, default=60.0)
-    ap.add_argument("--port", type=int, default=5555, help="UDP port HandDriver streams to (udcap only)")
+                    help="which hand to retarget/drive; also picks the URDF (default: left)")
+    ap.add_argument("--speed", type=float, default=40.0,
+                    help="L6 motor speed 0-100, set once at startup (--live only, "
+                         "default: 40.0). Motors do not move at 0.")
+    ap.add_argument("--fps", type=float, default=60.0,
+                    help="loop rate in Hz (default: 60.0). The console readout is "
+                         "throttled to ~12 Hz independently of this.")
+    ap.add_argument("--port", type=int, default=5555,
+                    help="UDP port HandDriver streams to (--glove udcap only, "
+                         "default: 5555). Ignored for wuji, which uses its SDK.")
     ap.add_argument("--map", choices=["retarget", "curl"], default="curl",
-                    help="angle-mapping strategy: the direct per-finger curl map "
-                         "(default, see curlmap.py) or the dex_retargeting vector optimizer")
+                    help="angle-mapping strategy (default: curl). 'curl' is the direct "
+                         "geometric per-finger map (see curlmap.py); 'retarget' is the "
+                         "dex_retargeting vector optimizer, which is degenerate for udcap.")
     ap.add_argument("--tune", type=Path, default=DEFAULT_TUNING_PATH,
                     help="curl tuning YAML (--map curl only); default is the shipped "
                          f"{DEFAULT_TUNING_PATH.name} (see prehensile/tuning.py)")
@@ -218,7 +233,8 @@ def main():
     glove = GLOVES[args.glove]
     hand = HANDS[args.hand]
     CONFIG = ROOT / "configs" / hand.config
-    interface = args.interface or hand.interface
+    # No CLI override: the interface always follows --hand.
+    interface = hand.interface
 
     # abd_invert now comes solely from the glove profile -- there is no CLI
     # override anymore.

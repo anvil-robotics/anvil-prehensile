@@ -181,22 +181,52 @@ def apply_curl_frame(model, data, curl_plan, mapper, kp) -> bool:
     return True
 
 
-def main():
-    ap = argparse.ArgumentParser(description="MuJoCo viewer for glove->L6 retargeting")
+def _build_parser() -> argparse.ArgumentParser:
+    """The CLI parser, split out of ``main()`` so the tests can assert flag help
+    and defaults without opening a MuJoCo window or reading a glove -- the same
+    reason ``teleop._build_parser`` exists."""
+    ap = argparse.ArgumentParser(
+        prog="python -m prehensile.viz",
+        # argparse keeps a flag's help beside it only while the invocation fits
+        # in max_help_position - 4 = 20 chars by default; "--map {retarget,curl}"
+        # is 21, so its help alone dropped to the next line and read as a gap.
+        # The column still sizes itself to the longest flag; this only raises the
+        # ceiling it is allowed to grow to.
+        formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(
+            prog, max_help_position=30),
+        description=(
+            "MuJoCo preview of glove -> REALHAND L6 retargeting.\n"
+            "Pure simulation: this NEVER opens CAN and never moves the real L6, so it\n"
+            "is safe to run with the hand powered and plugged in. It renders the L6\n"
+            "URDF tracking your glove, with your hand's keypoints overlaid in red."
+        )
+    )
     ap.add_argument("--glove", choices=sorted(GLOVES), default="udcap",
                     help="glove source to read from (default: udcap)")
     ap.add_argument("--hand", choices=sorted(HANDS), default="left",
-                    help="which hand/URDF to render (default: left)")
-    ap.add_argument("--port", type=int, default=5555, help="UDP port HandDriver streams to (udcap only)")
-    ap.add_argument("--fps", type=float, default=60.0)
-    ap.add_argument("--no-keypoints", action="store_true", help="hide the human keypoint overlay")
+                    help="which hand/URDF to render; also picks the retarget config "
+                         "(default: left)")
+    ap.add_argument("--port", type=int, default=5555,
+                    help="UDP port HandDriver streams to (--glove udcap only, "
+                         "default: 5555). Ignored for wuji, which uses its SDK.")
+    ap.add_argument("--fps", type=float, default=60.0,
+                    help="glove poll / viewer sync rate in Hz (default: 60.0)")
+    ap.add_argument("--no-keypoints", action="store_true",
+                    help="hide the red human-keypoint overlay and render the sim hand "
+                         "alone. The overlay's alignment to the robot wrist is "
+                         "approximate.")
     ap.add_argument("--map", choices=["retarget", "curl"], default="curl",
-                    help="angle-mapping strategy to preview: the direct per-finger curl map "
-                         "(default, see curlmap.py) or the dex_retargeting vector optimizer")
+                    help="angle-mapping strategy to preview (default: curl). 'curl' "
+                         "shows exactly what teleop sends the hand; 'retarget' shows "
+                         "the optimizer's raw qpos, before the 0-100 quantization.")
     ap.add_argument("--tune", type=Path, default=DEFAULT_TUNING_PATH,
                     help="curl tuning YAML (--map curl only); default is the shipped "
                          f"{DEFAULT_TUNING_PATH.name} (see prehensile/tuning.py)")
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = _build_parser().parse_args()
 
     glove = GLOVES[args.glove]
     hand = HANDS[args.hand]
