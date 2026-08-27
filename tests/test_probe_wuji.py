@@ -13,8 +13,6 @@ sat still. The synthetic hand below is built from those bone lengths so that a
 "good" frame in these tests is the shape the hardware actually emits.
 """
 
-import argparse
-
 import numpy as np
 import pytest
 
