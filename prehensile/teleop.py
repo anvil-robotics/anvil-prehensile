@@ -193,7 +193,13 @@ def _build_parser() -> argparse.ArgumentParser:
     without building a retargeter or touching hardware."""
     ap = argparse.ArgumentParser(
         prog="python -m prehensile.teleop",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        # argparse keeps a flag's help beside it only while the invocation fits
+        # in max_help_position - 4 = 20 chars by default; "--map {retarget,curl}"
+        # is 21, so its help alone dropped to the next line and read as a gap.
+        # The column still sizes itself to the longest flag; this only raises the
+        # ceiling it is allowed to grow to.
+        formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(
+            prog, max_help_position=30),
         description=(
             "Glove -> REALHAND L6 teleoperation.\n"
             "Reads the selected glove, normalizes each frame to (21,3) MediaPipe-order\n"

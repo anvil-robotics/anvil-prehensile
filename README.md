@@ -51,6 +51,7 @@ If `offline_check` fails, the environment is broken — stop there, it is not th
 glove.
 
 ## Bring-up
+
 ### 1 · Glove — pick one
 
 #### **UDCap Data Glove**
@@ -92,6 +93,16 @@ sudo python3 tools/bring_up_hand.py   # Re-run this after every replug.
 Every tool here defaults to a canonical interface name (`hand_l`/`hand_r`)
 rather than probing, and udev gives hand adapters no name — so those names exist
 only after this runs, and not across a reboot or replug.
+
+#### Work through this checklist before running anything below:
+
+- **Cables are connected to the computer** — the Wuji glove by Ethernet
+      cable and USB Type-A, the UDCap glove through its transmitter, and the
+      REALHAND L6 through its USB adapter.
+- **Every device passes its own check** — the glove moves in its own app
+      (Wuji → Wuji Studio, UDCap → HandDriver) and passes its probe tool
+      (`tools/probe_wuji.py`, `tools/probe_udp.py`); the L6 has had
+      `sudo python3 tools/bring_up_hand.py` run since its last replug.
 
 ### 3 · Anvil-Prehensile commands
 

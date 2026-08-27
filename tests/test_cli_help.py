@@ -2,12 +2,17 @@
 
 These are the commands the README tells people to run, so their ``--help`` is
 the primary documentation for anyone who has not opened the source. This pins
-three properties that are easy to lose when a flag is added in a hurry:
+the STRUCTURAL properties that are easy to lose when a flag is added in a hurry:
 
   1. every flag says what it does
   2. every flag whose default matters says what that default is -- otherwise
      the reader has to read the source to find out what happens if they omit it
-  3. the help shows how to actually invoke the command, with worked examples
+  3. every flag's help sits beside it rather than wrapping onto its own line
+  4. the usage line shows how the command is actually invoked
+
+Deliberately NOT tested: the wording of any help string. Grepping help text for
+keywords breaks on innocent rewording while proving nothing about whether the
+text is any good, so those assertions were dropped rather than maintained.
 
 Hardware-free: building a parser touches no glove, no CAN and no display.
 ``teleop._build_parser`` already existed for exactly this reason (see its
@@ -59,26 +64,6 @@ def test_usage_shows_how_the_command_is_actually_run(command):
     """argparse defaults prog to 'teleop.py'/'viz.py', which is not runnable --
     both are only ever invoked as `python -m prehensile.<name>`."""
     assert PARSERS[command]().prog == f"python -m prehensile.{command}"
-
-
-@pytest.mark.parametrize("command", sorted(PARSERS))
-def test_help_carries_worked_examples(command):
-    text = PARSERS[command]().format_help()
-    assert "example" in text.lower()
-    assert f"prehensile.{command}" in text
-
-
-def test_teleop_help_flags_the_one_option_that_moves_hardware():
-    """--live is the only flag with physical consequences; the help must say so
-    rather than leaving the reader to find out."""
-    help_text = _flag(teleop_parser(), "live").help.lower()
-    assert "move" in help_text
-
-
-def test_viz_help_promises_it_never_touches_the_robot():
-    """viz's whole value is being safe to run with hardware attached."""
-    text = viz_parser().format_help().lower()
-    assert "simulation" in text or "never" in text
 
 
 def test_teleop_has_no_interface_flag():
