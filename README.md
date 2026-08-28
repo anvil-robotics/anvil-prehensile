@@ -43,12 +43,11 @@ Anvil-Prehensile integrated with our OpenArm system:
 ## Install packages & offline check
 
 ```bash
-uv sync
+uv sync --all-extras                        # --all-extras, not bare `uv sync`
 uv run python -m prehensile.offline_check   # glove-free environment check
 ```
 
-If `offline_check` fails, the environment is broken — stop there, it is not the
-glove.
+If `offline_check` fails, the environment is broken — stop there, it is not the glove or hand.
 
 ## Bring-up
 
@@ -58,25 +57,22 @@ glove.
 
 Download **HandDriver**
 ([download](https://drive.google.com/drive/folders/1g4cA-hjEnTmQNcY6zyK04Bo9R_qfPcOC),
-[guide](https://udexreal.gitbook.io/udexreal-docs/robotics/usage-for-udexreal-robotics-products#id-3.-udexreal-robotics-teleoperation-system)).
+[guide](https://udexreal.gitbook.io/udexreal-docs/software-instruction/the-guide-of-handdriver-linux), in the guide **follow section 1.1** after download the HandDriver).
 Under **Config → Data Trans**, set Data Transmission **ON**, Format **Quater**,
-FPS **120**, Target `127.0.0.1:5555`:
+FPS **120**, Target `127.0.0.1:5555` (Make sure the target is 5555, it's easy to type one more 5 since HandDriver itself won't display):
 
 ![HandDriver data transmission settings](docs/img/udcap-data-transmission.png)
 
 After following the UDCap guide and **seeing the hands move in HandDriver**,
 run the command below to check that the glove is connected to the computer.
 ```bash
-uv run python tools/probe_udp.py
+uv run python tools/probe_udp.py 
 ```
 
 #### **Wuji Glove**
 
 Install **Wuji Studio** and calibrate the glove
-([install](https://docs.wuji.tech/docs/en/wuji-studio/latest/installation/), [calibration guide](https://docs.wuji.tech/docs/en/wuji-studio/latest/calibration/)).
-After calibrating, **make sure the hands move on the Wuji Studio visualization
-page**, then run the command below to check that the glove is connected to the
-computer.
+([install](https://docs.wuji.tech/docs/en/wuji-studio/latest/installation/), [guide](https://docs.wuji.tech/docs/en/wuji-glove/latest/getting-started/), for the ethernet cable setting, please follow **"Step3: Configure Computer Network"** in the link). After setting, **make sure the hands move on the Wuji Studio visualization page**, then run the command below to check that the glove is connected to the computer.
 ```bash
 uv run python tools/probe_wuji.py
 ```
