@@ -88,7 +88,9 @@ sudo python3 tools/bring_up_hand.py   # Re-run this after every replug.
 
 Every tool here defaults to a canonical interface name (`hand_l`/`hand_r`)
 rather than probing, and udev gives hand adapters no name — so those names exist
-only after this runs, and not across a reboot or replug.
+only after this runs, and not across a reboot or replug. A hand on a port
+another stack already names, such as a SUNIX card's `anvil_can2`, is opened with
+`teleop --interface anvil_can2` instead.
 
 #### Work through this checklist before running anything below:
 
@@ -119,6 +121,16 @@ uv run python -m prehensile.teleop --hand left --glove udcap --map retarget --sp
 ```
 The commands above use the left hand, the UDCap glove, a speed of 25, and
 retarget mapping. Use `-h` to see more flags.
+
+With UDCap, `--hand both` drives both hands from the one HandDriver stream, in one process:
+
+```bash
+uv run python -m prehensile.teleop --hand both --glove udcap --map curl --speed 25 --interface left=anvil_can2,right=anvil_can3 --live
+```
+
+### With anvil-sw's Quest teleop
+
+With the Quest controller strapped to the glove, its holder keeps the grip squeezed, so the grip can't be the arm's clutch. `--anvil-url http://<box>:8000` makes the glove's **A button** the switch instead: each press flips that side's Quest controller on or off in anvil-sw (`PUT /api/v1/quest/enabled`). On, the arm follows the controller from where it stands; off, it holds. Starting and stopping prehensile switch the controllers off, and so does a glove that stops sending for a quarter of a second.
 
 ### Special setting for UDCap
 

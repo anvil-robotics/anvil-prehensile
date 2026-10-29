@@ -70,15 +70,6 @@ def test_usage_shows_how_the_command_is_actually_run():
     assert teleop_parser().prog == "python -m prehensile.teleop"
 
 
-def test_teleop_has_no_interface_flag():
-    """--interface was removed: the CAN interface always follows --hand
-    (hand_l / hand_r, as named by tools/bring_up_hand.py), so an override was a
-    second way to say the same thing. Re-adding it makes this parse succeed."""
-    with pytest.raises(SystemExit) as exc:
-        teleop_parser().parse_args(["--interface", "hand_r"])
-    assert exc.value.code == 2  # argparse usage error
-
-
 def test_no_flag_is_orphaned_from_its_help_text():
     """argparse drops a flag's help to the next line when the invocation is
     wider than the help column, which reads as a gap in the middle of the list.

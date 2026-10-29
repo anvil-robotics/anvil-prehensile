@@ -28,6 +28,7 @@ from pathlib import Path
 from prehensile.command import qpos_index_map, qpos_to_l6_angles
 from prehensile.curlmap import CurlMapper
 from prehensile.profiles import GLOVES, HANDS
+from prehensile.quest_switch import QuestSwitch, QuestSwitchError
 from prehensile.tuning import DEFAULT_TUNING_PATH, resolve_tuning
 
 # prehensile.retarget (dex_retargeting) is imported lazily, function-locally in
@@ -93,8 +94,13 @@ def frame_to_angles(kp, retargeter, index_map, invert_flex: bool = True):
     return qpos_to_l6_angles(qpos, index_map, invert_flex=invert_flex)
 
 
-def loop(source, retargeter, index_map, sink, fps, invert_flex=True, mapper=None):
+def loop(source, retargeter, index_map, sink, fps, invert_flex=True, mapper=None,
+         switch=None, side="left"):
     """Read source -> retarget -> command -> sink, at ~fps. Prints angles (throttled).
+
+    When ``switch`` (a ``prehensile.quest_switch.QuestSwitch``) is given, each
+    tick also hands it ``side``'s glove: whether a fresh frame arrived and the
+    glove's aButton on it, which switch anvil-sw's Quest controller for that side.
 
     When ``mapper`` is given, each frame also edge-detects the glove's
     bButton (``getattr(source, "bButton", False)`` -- sources without one,
@@ -130,6 +136,9 @@ def loop(source, retargeter, index_map, sink, fps, invert_flex=True, mapper=None
     while True:
         t0 = time.monotonic()
         kp = source.poll()
+        if switch is not None:
+            switch.observe(side, fresh=kp is not None,
+                           a_button=getattr(source, "aButton", False), now=t0)
         if kp is None:
             kp = last_kp  # no fresh frame: hold last pose
             if kp is None:
@@ -188,6 +197,98 @@ def loop(source, retargeter, index_map, sink, fps, invert_flex=True, mapper=None
             time.sleep(budget - dt)
 
 
+def loop_both(source, mappers, sinks, fps, switch=None):
+    """Both hands off one glove socket, at ~fps: one ``source.poll_sides`` (UDCap's)
+    a tick, then per side what ``loop()`` does on its curl path -- hold the last
+    pose when no fresh frame came, the bButton's rising edge toggles that side's
+    grasp lock, the aButton goes to ``switch`` -- into that side's sink.
+
+    A side whose sink raises ``HandOutputError`` is retired and the other keeps
+    going: one hand's CAN fault must never stop the other hand, nor the quiet-glove
+    check ``switch`` runs in this loop (the 2026-07-28 lesson, see hand_driver.py).
+
+    The readout is one line, ``L 100 100  88 100 100 100   R ...``, each side's six
+    angles in ``JOINTS`` order; a ``*`` after the side letter marks its grasp lock.
+    """
+    from prehensile.hand_driver import HandOutputError
+
+    sides = tuple(mappers)
+    live = dict(sinks)
+    budget = 1.0 / fps
+    last_kp = dict.fromkeys(sides)
+    prev_b = dict.fromkeys(sides, False)
+    last_print = 0.0
+    prev_len = 0
+    while True:
+        t0 = time.monotonic()
+        frames = source.poll_sides(sides)
+        shown = {}
+        for side in sides:
+            kp = frames[side]
+            a_button, b_button = source.buttons_by_side[side]
+            if switch is not None:
+                switch.observe(side, fresh=kp is not None, a_button=a_button, now=t0)
+            if kp is None:
+                kp = last_kp[side]
+                if kp is None:
+                    continue
+            else:
+                last_kp[side] = kp
+            mapper = mappers[side]
+            if b_button and not prev_b[side]:
+                mapper.locked = not mapper.locked
+            prev_b[side] = b_button
+            angles = mapper(kp)
+            if angles is None:
+                continue
+            shown[side] = angles
+            sink = live.get(side)
+            if sink is None:
+                continue
+            try:
+                sink(angles)
+            except HandOutputError as exc:
+                del live[side]
+                print(f"\n{side} hand retired after a CAN/L6 error: {exc}; the other hand "
+                      "keeps going", flush=True)
+
+        if t0 - last_print > 0.08:  # throttle console to ~12 Hz, as loop() does
+            content = "   ".join(
+                f"{side[0].upper()}{'*' if mappers[side].locked else ' '} "
+                + " ".join(f"{a:3.0f}" for a in angles)
+                for side, angles in shown.items())
+            print("\r" + content.ljust(prev_len), end="", flush=True)
+            prev_len = len(content)
+            last_print = t0
+        dt = time.monotonic() - t0
+        if dt < budget:
+            time.sleep(budget - dt)
+
+
+def _interfaces(value, sides):
+    """``--interface`` as each side's SocketCAN link: one name for one hand, or
+    ``left=NAME,right=NAME``; a side it leaves out takes its canonical name."""
+    named = {}
+    for part in (value.split(",") if value else []):
+        side, sep, name = part.partition("=")
+        if not sep and len(sides) == 1:
+            named[sides[0]] = part
+        elif sep and side in sides and name:
+            named[side] = name
+        else:
+            raise ValueError(f"--interface {value!r}: give one name for one hand, or "
+                             "left=NAME,right=NAME for --hand both")
+    return {side: named.get(side, HANDS[side].interface) for side in sides}
+
+
+def _countdown():
+    print("SAFETY: the L6 will move. Clear the area. Starting in", end=" ", flush=True)
+    for n in (3, 2, 1):
+        print(n, end=" ", flush=True)
+        time.sleep(1.0)
+    print("go!\n")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """The CLI parser, split out of ``main()`` so the tests can assert flag defaults
     without building a retargeter or touching hardware."""
@@ -212,8 +313,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          "countdown runs first. Default: dry-run, print only.")
     ap.add_argument("--glove", choices=sorted(GLOVES), default="udcap",
                     help="glove source to read from (default: udcap)")
-    ap.add_argument("--hand", choices=sorted(HANDS), default="left",
-                    help="which hand to retarget/drive; also picks the URDF (default: left)")
+    ap.add_argument("--hand", choices=[*sorted(HANDS), "both"], default="left",
+                    help="which hand to retarget/drive; also picks the URDF (default: left). "
+                         "'both' drives both off one glove socket (--glove udcap --map curl).")
     ap.add_argument("--speed", type=float, default=40.0,
                     help="L6 motor speed 0-100, set once at startup (--live only, "
                          "default: 40.0). Motors do not move at 0.")
@@ -230,17 +332,31 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tune", type=Path, default=DEFAULT_TUNING_PATH,
                     help="curl tuning YAML (--map curl only); default is the shipped "
                          f"{DEFAULT_TUNING_PATH.name} (see prehensile/tuning.py)")
+    ap.add_argument("--interface", default=None,
+                    help="SocketCAN interface the L6 is on (--live only); default: the "
+                         "--hand's canonical name, hand_l or hand_r. For a hand on a port "
+                         "another stack names, e.g. a SUNIX card's anvil_can2; with --hand "
+                         "both, left=NAME,right=NAME.")
+    ap.add_argument("--anvil-url", default=None,
+                    help="anvil-sw web app, e.g. http://127.0.0.1:8000: the glove's A button "
+                         "then switches that side's Quest controller on and off (see "
+                         "quest_switch.py). Default: none, the Quest is left alone.")
     return ap
 
 
 def main():
-    args = _build_parser().parse_args()
+    ap = _build_parser()
+    args = ap.parse_args()
+    if args.hand == "both":
+        return _main_both(args, ap)
 
     glove = GLOVES[args.glove]
     hand = HANDS[args.hand]
     CONFIG = ROOT / "configs" / hand.config
-    # No CLI override: the interface always follows --hand.
-    interface = hand.interface
+    try:
+        interface = _interfaces(args.interface, [hand.side])[hand.side]
+    except ValueError as exc:
+        ap.error(str(exc))
 
     # abd_invert now comes solely from the glove profile -- there is no CLI
     # override anymore.
@@ -285,15 +401,18 @@ def main():
         print(f"Cannot bind UDP :{args.port}: {exc}")
         return 1
 
+    switch_cm = (QuestSwitch(args.anvil_url, [hand.side]) if args.anvil_url
+                 else contextlib.nullcontext())
     try:
-        with source_cm as src:
+        with source_cm as src, switch_cm as switch:
             if not args.live:
                 print(f"DRY-RUN (no hardware motion). Reading {glove.name} glove "
                       f"({'UDP :' + str(args.port) if args.glove == 'udcap' else 'SDK'}). "
                       "Move your hand; Ctrl-C to stop.\n")
                 with contextlib.suppress(KeyboardInterrupt):
                     loop(src, retargeter, index_map, sink=lambda a: None, fps=args.fps,
-                         invert_flex=glove.invert_flex, mapper=mapper)
+                         invert_flex=glove.invert_flex, mapper=mapper,
+                         switch=switch, side=hand.side)
                 print("\nstopped.")
                 return 0
 
@@ -302,11 +421,7 @@ def main():
             # prehensile/hand_driver.py's module docstring.
             from prehensile.hand_driver import HandOutputError, L6Driver
 
-            print("SAFETY: the L6 will move. Clear the area. Starting in", end=" ", flush=True)
-            for n in (3, 2, 1):
-                print(n, end=" ", flush=True)
-                time.sleep(1.0)
-            print("go!\n")
+            _countdown()
             try:
                 with L6Driver(side=hand.side, interface_name=interface) as driver:
                     driver.set_speed(args.speed)  # motors won't move at speed 0
@@ -314,15 +429,85 @@ def main():
                     with contextlib.suppress(KeyboardInterrupt):
                         loop(src, retargeter, index_map,
                              sink=driver.send, fps=args.fps,
-                             invert_flex=glove.invert_flex, mapper=mapper)
+                             invert_flex=glove.invert_flex, mapper=mapper,
+                             switch=switch, side=hand.side)
                     print("\nstopped (hand holds its last commanded pose).")
             except HandOutputError as exc:
                 print(f"\nCAN/L6 error: {exc}")
                 print(f"Check the L6 is powered and {interface} is up: "
                       f"ip -details link show {interface}")
                 return 1
+    except QuestSwitchError as exc:
+        print(f"Cannot reach anvil-sw's Quest switch: {exc}")
+        return 1
     except (OSError, RuntimeError) as exc:
         print(f"Cannot open {glove.name} glove: {exc}")
+        return 1
+    return 0
+
+
+def _main_both(args, ap):
+    """``--hand both``: both gloves off UDCap's one socket, both L6s, one process."""
+    from prehensile.hand_driver import HandOutputError, L6Driver
+    from prehensile.udcap import UDCapSource
+
+    if args.glove != "udcap" or args.map != "curl":
+        ap.error("--hand both reads both gloves off UDCap's one socket through the curl "
+                 "map: --glove udcap --map curl")
+    sides = ("left", "right")
+    try:
+        interfaces = _interfaces(args.interface, sides)
+    except ValueError as exc:
+        ap.error(str(exc))
+    abd_invert = GLOVES["udcap"].abd_invert
+    mappers = {side: CurlMapper(side=side, abd_invert=abd_invert,
+                                tuning=resolve_tuning(args.tune, side=side, require_couple_low=True))
+               for side in sides}
+    print(f"curl tuning: {args.tune}")
+
+    try:
+        source_cm = UDCapSource(port=args.port, side="left")
+    except OSError as exc:
+        print(f"Cannot bind UDP :{args.port}: {exc}")
+        return 1
+    switch_cm = QuestSwitch(args.anvil_url, sides) if args.anvil_url else contextlib.nullcontext()
+    try:
+        with source_cm as src, switch_cm as switch:
+            if not args.live:
+                print(f"DRY-RUN (no hardware motion). Reading both udcap gloves (UDP :{args.port}). "
+                      "Move your hands; Ctrl-C to stop.\n")
+                with contextlib.suppress(KeyboardInterrupt):
+                    loop_both(src, mappers, dict.fromkeys(sides, lambda a: None), args.fps, switch)
+                print("\nstopped.")
+                return 0
+
+            _countdown()
+            with contextlib.ExitStack() as stack:
+                sinks = {}
+                for side in sides:
+                    try:
+                        driver = stack.enter_context(
+                            L6Driver(side=side, interface_name=interfaces[side]))
+                        driver.set_speed(args.speed)  # motors won't move at speed 0
+                    except HandOutputError as exc:
+                        print(f"{side} hand not driven: {exc}. Check the L6 is powered and "
+                              f"{interfaces[side]} is up: ip -details link show {interfaces[side]}")
+                        continue
+                    sinks[side] = driver.send
+                if not sinks:
+                    return 1
+                time.sleep(0.2)
+                with contextlib.suppress(KeyboardInterrupt):
+                    loop_both(src, mappers, sinks, args.fps, switch)
+                print("\nstopped (hands hold their last commanded pose).")
+    except HandOutputError as exc:
+        print(f"\nCAN/L6 error closing a hand: {exc}")
+        return 1
+    except QuestSwitchError as exc:
+        print(f"Cannot reach anvil-sw's Quest switch: {exc}")
+        return 1
+    except (OSError, RuntimeError) as exc:
+        print(f"Cannot open the udcap gloves: {exc}")
         return 1
     return 0
 
